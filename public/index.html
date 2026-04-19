@@ -229,6 +229,14 @@ function bar(pct) {
   return `<span class="bar"><span class="bar-fill" style="width:${p}%"></span></span> <span class="muted">${p.toFixed(0)}%</span>`;
 }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function aiBadge(score) {
+  if (score == null || score === '') return '<span class="muted">—</span>';
+  const s = +score;
+  let bg = 'rgba(255,68,85,.2)', fg = '#ff8295';
+  if (s >= 70)      { bg = 'rgba(62,255,154,.18)'; fg = '#7dffb6'; }
+  else if (s >= 40) { bg = 'rgba(255,179,71,.18)'; fg = '#ffd17a'; }
+  return `<span style="display:inline-block;min-width:28px;padding:1px 6px;border-radius:3px;background:${bg};color:${fg};font-weight:700;font-size:11px;text-align:center">${s}</span>`;
+}
 
 function showView(v) {
   currentView = v;
@@ -674,7 +682,7 @@ async function renderLeads() {
       </div>
       <div class="panel-body" style="padding:0;overflow-x:auto;">
         <table>
-          <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Website</th><th>Platform</th><th>Status</th><th>Tags</th><th>City / State</th><th>Industry</th><th>Rating</th><th>Found</th></tr></thead>
+          <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Website</th><th>Platform</th><th>Status</th><th>Tags</th><th>City / State</th><th>Industry</th><th>Rating</th><th title="AI SEO">SEO</th><th title="AI Design">DES</th><th>Found</th></tr></thead>
           <tbody>
             ${r.leads.map(l => {
               let tags = [];
@@ -694,9 +702,11 @@ async function renderLeads() {
                 <td class="muted">${esc(l.city||'')}${l.state?', '+esc(l.state):''}</td>
                 <td><span class="status done">${esc(l.industry||'—')}</span></td>
                 <td>${l.rating||'—'} ${l.reviews?`<span class="muted" style="font-size:10px">(${l.reviews})</span>`:''}</td>
+                <td>${aiBadge(l.ai_seo_score)}</td>
+                <td>${aiBadge(l.ai_design_score)}</td>
                 <td class="muted" style="font-size:10px">${fmt(l.created_at)}</td>
               </tr>`;
-            }).join('') || '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">No leads yet.</td></tr>'}
+            }).join('') || '<tr><td colspan="13" class="muted" style="text-align:center;padding:24px">No leads yet.</td></tr>'}
           </tbody>
         </table>
       </div>

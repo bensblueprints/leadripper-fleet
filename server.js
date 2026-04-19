@@ -156,8 +156,11 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
   const insertLead = db.prepare(`
     INSERT OR IGNORE INTO leads (job_id, node_id, name, phone, email, website, address, city, state,
       industry, gcid, search_term, google_category_raw, rating, reviews,
-      website_platform, website_status, tags, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      website_platform, website_status, tags, business_hours,
+      reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
+      ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_analyzed_at, ai_provider,
+      created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const txn = db.transaction(() => {
@@ -168,7 +171,13 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
         l.address || null, l.city || job.city, l.state || job.state,
         l.industry || null, l.gcid || null, l.search_term || job.industry,
         l.google_category_raw || null, l.rating || null, l.reviews || null,
-        l.website_platform || null, l.website_status || 'unchecked', tagsJson, t);
+        l.website_platform || null, l.website_status || 'unchecked', tagsJson, l.business_hours || null,
+        +(l.reviews_1star||0), +(l.reviews_2star||0), +(l.reviews_3star||0), +(l.reviews_4star||0), +(l.reviews_5star||0),
+        l.ai_seo_score == null ? null : +l.ai_seo_score,
+        l.ai_design_score == null ? null : +l.ai_design_score,
+        l.ai_seo_notes || null, l.ai_design_notes || null,
+        l.ai_analyzed_at || null, l.ai_provider || null,
+        t);
     }
     db.prepare(`
       UPDATE jobs SET status=?, finished_at=?, leads_found=?, error=? WHERE id=?
@@ -230,8 +239,11 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
     INSERT OR IGNORE INTO leads
       (job_id, node_id, name, phone, email, website, address, city, state,
        industry, gcid, search_term, google_category_raw, rating, reviews,
-       website_platform, website_status, tags, created_at)
-    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       website_platform, website_status, tags, business_hours,
+       reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
+       ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_analyzed_at, ai_provider,
+       created_at)
+    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const t = now();
@@ -244,7 +256,13 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
         l.address || null, l.city || null, l.state || null,
         l.industry || null, l.gcid || null, l.search_term || l.industry || null,
         l.google_category_raw || null, l.rating || null, l.reviews || null,
-        l.website_platform || null, l.website_status || 'unchecked', tagsJson, t);
+        l.website_platform || null, l.website_status || 'unchecked', tagsJson, l.business_hours || null,
+        +(l.reviews_1star||0), +(l.reviews_2star||0), +(l.reviews_3star||0), +(l.reviews_4star||0), +(l.reviews_5star||0),
+        l.ai_seo_score == null ? null : +l.ai_seo_score,
+        l.ai_design_score == null ? null : +l.ai_design_score,
+        l.ai_seo_notes || null, l.ai_design_notes || null,
+        l.ai_analyzed_at || null, l.ai_provider || null,
+        t);
       if (r.changes) inserted++; else skipped++;
     }
     if (inserted) {
@@ -380,7 +398,7 @@ app.get('/api/admin/leads/export', requireAdmin, (req, res) => {
   if (gcid)     { where.push('gcid = ?');     params.push(gcid); }
   if (state)    { where.push('state = ?');    params.push(state); }
   const rows = db.prepare(`SELECT * FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT ?`).all(...params, +limit);
-  const cols = ['name','phone','email','website','address','city','state','industry','gcid','rating','reviews','website_platform','website_status','tags'];
+  const cols = ['name','phone','email','website','address','city','state','industry','gcid','rating','reviews','website_platform','website_status','tags','business_hours','reviews_1star','reviews_2star','reviews_3star','reviews_4star','reviews_5star','ai_seo_score','ai_design_score','ai_seo_notes','ai_design_notes','ai_provider','ai_analyzed_at'];
   const esc = v => v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
   let csv = cols.join(',') + '\n';
   for (const r of rows) csv += cols.map(c => esc(r[c])).join(',') + '\n';
@@ -396,10 +414,14 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
   const ins = db.prepare(`
     INSERT OR IGNORE INTO leads (name, phone, email, website, address, city, state,
       industry, gcid, search_term, google_category_raw, rating, reviews,
-      website_platform, website_status, tags, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      website_platform, website_status, tags, business_hours,
+      reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
+      ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_provider, ai_analyzed_at,
+      created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const t = now();
+  const toInt = v => (v == null || v === '') ? null : (Number.isFinite(+v) ? +v : null);
   let inserted = 0, skipped = 0;
   const txn = db.transaction(() => {
     for (const l of leads) {
@@ -416,6 +438,18 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
         l.website_platform || null,
         l.website_status || 'unchecked',
         tagsJson,
+        l.business_hours || null,
+        toInt(l.reviews_1star) || 0,
+        toInt(l.reviews_2star) || 0,
+        toInt(l.reviews_3star) || 0,
+        toInt(l.reviews_4star) || 0,
+        toInt(l.reviews_5star) || 0,
+        toInt(l.ai_seo_score),
+        toInt(l.ai_design_score),
+        l.ai_seo_notes || null,
+        l.ai_design_notes || null,
+        l.ai_provider || null,
+        toInt(l.ai_analyzed_at),
         t
       );
       if (r.changes) inserted++; else skipped++;

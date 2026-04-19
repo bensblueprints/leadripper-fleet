@@ -64,12 +64,24 @@ try {
   }
 } catch {}
 
-// Migration: enrichment columns on leads
+// Migration: enrichment + new metrics + AI analysis columns on leads
 try {
   const lcols = db.prepare(`PRAGMA table_info(leads)`).all().map(c => c.name);
   if (!lcols.includes('website_platform')) db.exec(`ALTER TABLE leads ADD COLUMN website_platform TEXT`);
   if (!lcols.includes('website_status')) db.exec(`ALTER TABLE leads ADD COLUMN website_status TEXT DEFAULT 'unchecked'`);
   if (!lcols.includes('tags')) db.exec(`ALTER TABLE leads ADD COLUMN tags TEXT DEFAULT '[]'`);
+  if (!lcols.includes('business_hours')) db.exec(`ALTER TABLE leads ADD COLUMN business_hours TEXT`);
+  if (!lcols.includes('reviews_1star')) db.exec(`ALTER TABLE leads ADD COLUMN reviews_1star INTEGER DEFAULT 0`);
+  if (!lcols.includes('reviews_2star')) db.exec(`ALTER TABLE leads ADD COLUMN reviews_2star INTEGER DEFAULT 0`);
+  if (!lcols.includes('reviews_3star')) db.exec(`ALTER TABLE leads ADD COLUMN reviews_3star INTEGER DEFAULT 0`);
+  if (!lcols.includes('reviews_4star')) db.exec(`ALTER TABLE leads ADD COLUMN reviews_4star INTEGER DEFAULT 0`);
+  if (!lcols.includes('reviews_5star')) db.exec(`ALTER TABLE leads ADD COLUMN reviews_5star INTEGER DEFAULT 0`);
+  if (!lcols.includes('ai_seo_score')) db.exec(`ALTER TABLE leads ADD COLUMN ai_seo_score INTEGER`);
+  if (!lcols.includes('ai_design_score')) db.exec(`ALTER TABLE leads ADD COLUMN ai_design_score INTEGER`);
+  if (!lcols.includes('ai_seo_notes')) db.exec(`ALTER TABLE leads ADD COLUMN ai_seo_notes TEXT`);
+  if (!lcols.includes('ai_design_notes')) db.exec(`ALTER TABLE leads ADD COLUMN ai_design_notes TEXT`);
+  if (!lcols.includes('ai_analyzed_at')) db.exec(`ALTER TABLE leads ADD COLUMN ai_analyzed_at INTEGER`);
+  if (!lcols.includes('ai_provider')) db.exec(`ALTER TABLE leads ADD COLUMN ai_provider TEXT`);
 } catch {}
 
 // Partial unique index for dedupe on sync-leads (tolerates legacy dupes; new inserts use OR IGNORE)
