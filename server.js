@@ -627,6 +627,73 @@ app.get('/api/admin/leads', requireAdmin, (req, res) => {
   res.json({ leads: rows });
 });
 
+// ==================== UPDATES (self-hosted releases) ====================
+// Release binaries + latest.json live in /data/releases (Docker volume on Contabo).
+// latest.json shape:
+//   { "version": "6.6.0",
+//     "notes": "…",
+//     "assets": {
+//       "portable":  "LeadRipper-Portable-v6.6.0.exe",
+//       "installer": "LeadRipper-Setup-v6.6.0.exe",
+//       "dmg":       "LeadRipper-v6.6.0.dmg"
+//     } }
+const RELEASES_DIR = path.join(process.env.DATA_DIR || '/data', 'releases');
+try { fs.mkdirSync(RELEASES_DIR, { recursive: true }); } catch {}
+
+function requireLicense(req, res, next) {
+  const key = req.headers['x-license-key'] || req.query.key;
+  if (!validLicense(key)) return res.status(401).json({ error: 'invalid license' });
+  next();
+}
+
+app.get('/api/updates/latest', requireLicense, (req, res) => {
+  try {
+    const p = path.join(RELEASES_DIR, 'latest.json');
+    if (!fs.existsSync(p)) return res.status(404).json({ error: 'no release published' });
+    const meta = JSON.parse(fs.readFileSync(p, 'utf8'));
+    // Verify files exist; include size for each asset so the client can show progress
+    const assets = {};
+    for (const [kind, name] of Object.entries(meta.assets || {})) {
+      const fp = path.join(RELEASES_DIR, name);
+      if (fs.existsSync(fp)) {
+        assets[kind] = { name, size: fs.statSync(fp).size };
+      }
+    }
+    res.json({ version: meta.version, notes: meta.notes || '', assets });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/updates/download/:file', requireLicense, (req, res) => {
+  const name = path.basename(req.params.file); // prevent traversal
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
+  const fp = path.join(RELEASES_DIR, name);
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
+  res.sendFile(fp);
+});
+
+// Admin-only: upload a new binary + update latest.json atomically.
+// Accepts multipart upload isn't worth wiring for a 1/week operation; admin POSTs
+// binary bytes as raw body with X-Filename header.
+app.post('/api/admin/updates/upload', requireAdmin, express.raw({ type: '*/*', limit: '500mb' }), (req, res) => {
+  const filename = req.headers['x-filename'];
+  if (!filename || !/^[A-Za-z0-9._-]+$/.test(String(filename))) {
+    return res.status(400).json({ error: 'bad X-Filename header' });
+  }
+  const fp = path.join(RELEASES_DIR, String(filename));
+  fs.writeFileSync(fp, req.body);
+  res.json({ ok: true, saved: filename, size: req.body.length });
+});
+
+app.post('/api/admin/updates/publish', requireAdmin, (req, res) => {
+  const { version, notes = '', assets = {} } = req.body || {};
+  if (!version || typeof assets !== 'object') return res.status(400).json({ error: 'version + assets required' });
+  const meta = { version, notes, assets, published_at: now() };
+  fs.writeFileSync(path.join(RELEASES_DIR, 'latest.json'), JSON.stringify(meta, null, 2));
+  res.json({ ok: true, meta });
+});
+
 // ==================== STATIC ====================
 app.use(express.static(path.join(__dirname, 'public')));
 
