@@ -527,6 +527,75 @@ app.patch('/api/admin/nodes/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// ==================== DISTRIBUTED RECATEGORIZE ====================
+// Admin queues leads for recat → workers pull batches → run normalizer on their
+// own CPU cores → post updates back. Normalizer is pure CPU so workers parallelize
+// across their logical cores.
+
+// Admin: start a recat session by queuing leads (optionally filtered).
+app.post('/api/admin/recat/start', requireAdmin, (req, res) => {
+  const { scope = 'all', industry = null, state = null } = req.body || {};
+  const where = ["(recat_status IS NULL OR recat_status = 'done')"];
+  const params = [];
+  if (scope === 'no-gcid') where.push('(gcid IS NULL OR gcid = "")');
+  if (scope === 'filter' || industry || state) {
+    if (industry) { where.push('industry = ?'); params.push(industry); }
+    if (state) { where.push('state = ?'); params.push(state); }
+  }
+  const r = db.prepare(`UPDATE leads SET recat_status = 'queued' WHERE ${where.join(' AND ')}`).run(...params);
+  res.json({ ok: true, queued: r.changes });
+});
+
+app.get('/api/admin/recat/status', requireAdmin, (req, res) => {
+  const row = db.prepare(`
+    SELECT
+      SUM(CASE WHEN recat_status='queued' THEN 1 ELSE 0 END) AS queued,
+      SUM(CASE WHEN recat_status='done' THEN 1 ELSE 0 END) AS done,
+      COUNT(*) AS total
+    FROM leads`).get();
+  res.json(row);
+});
+
+app.post('/api/admin/recat/cancel', requireAdmin, (req, res) => {
+  const r = db.prepare(`UPDATE leads SET recat_status = NULL WHERE recat_status = 'queued'`).run();
+  res.json({ ok: true, cleared: r.changes });
+});
+
+// Worker: pull a batch of queued leads to normalize
+app.post('/api/fleet/recat/pull', requireWorker, (req, res) => {
+  const { batch_size = 500 } = req.body || {};
+  const size = Math.min(Math.max(+batch_size || 500, 10), 2000);
+  // Atomic claim: select queued IDs, flip to 'working-<nodeId>' so other workers skip them
+  const node = db.prepare('SELECT id FROM nodes WHERE machine_id = ?').get(req.machineId);
+  const claim = `working-${node?.id || 0}`;
+  const rows = db.prepare(`SELECT id FROM leads WHERE recat_status = 'queued' LIMIT ?`).all(size);
+  if (!rows.length) return res.json({ leads: [] });
+  const ids = rows.map(r => r.id);
+  db.prepare(`UPDATE leads SET recat_status=? WHERE id IN (${ids.map(()=>'?').join(',')}) AND recat_status='queued'`)
+    .run(claim, ...ids);
+  const leads = db.prepare(`
+    SELECT id, name, industry, gcid, google_category_raw, website, address
+    FROM leads WHERE id IN (${ids.map(()=>'?').join(',')})
+  `).all(...ids);
+  res.json({ leads });
+});
+
+// Worker: submit recategorized leads
+app.post('/api/fleet/recat/submit', requireWorker, (req, res) => {
+  const { updates = [] } = req.body || {};
+  if (!Array.isArray(updates) || !updates.length) return res.json({ ok: true, updated: 0 });
+  const upd = db.prepare(`UPDATE leads SET industry=COALESCE(?, industry), gcid=COALESCE(?, gcid), recat_status='done' WHERE id=?`);
+  let updated = 0;
+  const txn = db.transaction(() => {
+    for (const u of updates) {
+      const r = upd.run(u.industry || null, u.gcid || null, +u.id);
+      if (r.changes) updated++;
+    }
+  });
+  txn();
+  res.json({ ok: true, updated });
+});
+
 // Live activity: group recent leads (last N minutes) by node + industry + city
 // so we can show what each worker is currently scraping (for local scrapes that
 // don't go through the fleet-job dispatcher).

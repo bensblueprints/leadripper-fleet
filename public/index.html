@@ -741,13 +741,18 @@ async function renderLeads() {
     <div class="panel">
       <div class="panel-header">
         <h2>Fleet Leads (${r.total.toLocaleString()} total)</h2>
-        <div style="display:flex;gap:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="green" onclick="exportLeads()">Export CSV</button>
           <button onclick="document.getElementById('import-file').click()">Import CSV</button>
           <input id="import-file" type="file" accept=".csv,.json" style="display:none" onchange="importLeads(event)">
+          <button onclick="recatStart('no-gcid')" title="Queue leads missing a GCID for worker normalization">Recat: No-GCID</button>
+          <button onclick="recatStart('all')" title="Queue every lead for worker recategorization">Recat: All</button>
+          <button class="danger" onclick="recatCancel()">Cancel Recat</button>
           <button onclick="loadCurrent()">Refresh</button>
         </div>
       </div>
+      <div id="recat-status-bar" style="padding:8px 16px;border-top:1px solid var(--border);display:none;font-size:12px"></div>
+      <script>setTimeout(pollRecat, 200);</script>
       <div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
         <div style="flex:1;min-width:240px">
           <label>Search (name / phone / email / website / address)</label>
@@ -823,6 +828,51 @@ function exportLeads() {
   window.open('/api/admin/leads/export?' + qs, '_blank');
 }
 function copy(text) { navigator.clipboard.writeText(text); }
+
+// ---------- Distributed Recategorize ----------
+let recatPollTimer = null;
+async function recatStart(scope) {
+  const msg = scope === 'all'
+    ? 'Queue ALL leads for worker re-normalization? This runs on connected worker CPUs (no scraping).'
+    : 'Queue leads without a GCID for worker normalization?';
+  if (!confirm(msg)) return;
+  const body = { scope };
+  if (leadsIndustry) body.industry = leadsIndustry;
+  if (leadsState) body.state = leadsState;
+  const r = await api('/api/admin/recat/start', { method: 'POST', body: JSON.stringify(body), headers: {'Content-Type':'application/json'} });
+  alert(`Queued ${r.queued.toLocaleString()} leads. Workers will pick them up automatically.`);
+  startRecatPoll();
+}
+async function recatCancel() {
+  if (!confirm('Cancel queued recategorization jobs?')) return;
+  const r = await api('/api/admin/recat/cancel', { method: 'POST' });
+  alert(`Cleared ${r.cleared.toLocaleString()} queued jobs.`);
+  pollRecat();
+}
+async function pollRecat() {
+  const bar = document.getElementById('recat-status-bar');
+  if (!bar) { stopRecatPoll(); return; }
+  try {
+    const s = await api('/api/admin/recat/status');
+    if (!s.queued) {
+      bar.style.display = 'none';
+      stopRecatPoll();
+      return;
+    }
+    bar.style.display = 'block';
+    bar.innerHTML = `<span class="dot working"></span> <strong>Recategorize in progress</strong> — queued: <strong>${(s.queued||0).toLocaleString()}</strong> · completed: ${(s.done||0).toLocaleString()} · workers will drain the queue.`;
+  } catch (e) {
+    bar.style.display = 'none';
+  }
+}
+function startRecatPoll() {
+  pollRecat();
+  stopRecatPoll();
+  recatPollTimer = setInterval(pollRecat, 4000);
+}
+function stopRecatPoll() {
+  if (recatPollTimer) { clearInterval(recatPollTimer); recatPollTimer = null; }
+}
 
 // ---------- CSV import (same column names as export) ----------
 function parseCSV(text) {

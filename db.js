@@ -72,6 +72,13 @@ try {
   if (!ncols.includes('current_job_city')) db.exec(`ALTER TABLE nodes ADD COLUMN current_job_city TEXT`);
 } catch {}
 
+// Migration: recategorize queue column on leads
+try {
+  const lcols2 = db.prepare(`PRAGMA table_info(leads)`).all().map(c => c.name);
+  if (!lcols2.includes('recat_status')) db.exec(`ALTER TABLE leads ADD COLUMN recat_status TEXT`); // NULL | 'queued' | 'done'
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_leads_recat ON leads(recat_status)`);
+} catch {}
+
 // Migration: enrichment + new metrics + AI analysis columns on leads
 try {
   const lcols = db.prepare(`PRAGMA table_info(leads)`).all().map(c => c.name);
