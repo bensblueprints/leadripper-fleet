@@ -526,15 +526,16 @@ app.get('/api/admin/activity', requireAdmin, (req, res) => {
   const windowSec = Math.min(+req.query.window || 180, 3600); // default 3 min
   const cutoff = now() - windowSec;
   const rows = db.prepare(`
-    SELECT l.node_id, l.industry, l.city, l.state,
+    SELECT l.node_id, l.industry,
            COUNT(*) AS leads_count,
+           COUNT(DISTINCT l.city) AS cities_count,
            MIN(l.created_at) AS first_at,
            MAX(l.created_at) AS last_at,
            n.label AS node_label, n.hostname AS node_hostname, n.status AS node_status
     FROM leads l
     LEFT JOIN nodes n ON n.id = l.node_id
     WHERE l.created_at >= ? AND l.job_id IS NULL
-    GROUP BY l.node_id, l.industry, l.city
+    GROUP BY l.node_id, l.industry
     ORDER BY last_at DESC
     LIMIT 50
   `).all(cutoff);

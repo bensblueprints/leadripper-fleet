@@ -359,7 +359,7 @@ async function renderFleet() {
       </div>
       <div class="panel-body" style="padding:0;overflow-x:auto;">
         <table>
-          <thead><tr><th>Node</th><th>Industry</th><th>City</th><th>Leads (3m)</th><th>Started</th><th>Last Lead</th></tr></thead>
+          <thead><tr><th>Node</th><th>Industry</th><th>Cities</th><th>Leads (3m)</th><th>Started</th><th>Last Lead</th></tr></thead>
           <tbody>
             ${activity.activity.map(a => {
               const ago = Math.max(0, Math.floor((Date.now()/1000) - a.last_at));
@@ -370,7 +370,7 @@ async function renderFleet() {
                   ${esc(a.node_label || a.node_hostname || '#'+a.node_id)}
                 </td>
                 <td><span class="status done">${esc(a.industry||'—')}</span></td>
-                <td>${esc(a.city||'—')}${a.state?', '+esc(a.state):''}</td>
+                <td>${a.cities_count}</td>
                 <td><strong>${a.leads_count}</strong></td>
                 <td class="muted" style="font-size:10px">${fmt(a.first_at)}</td>
                 <td class="muted" style="font-size:10px">${ago}s ago</td>
