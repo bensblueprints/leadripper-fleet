@@ -629,6 +629,8 @@ async function renderLeads() {
         <h2>Fleet Leads (${r.total.toLocaleString()} total)</h2>
         <div style="display:flex;gap:6px">
           <button class="green" onclick="exportLeads()">Export CSV</button>
+          <button onclick="document.getElementById('import-file').click()">Import CSV</button>
+          <input id="import-file" type="file" accept=".csv,.json" style="display:none" onchange="importLeads(event)">
           <button onclick="loadCurrent()">Refresh</button>
         </div>
       </div>
@@ -695,6 +697,67 @@ function exportLeads() {
   window.open('/api/admin/leads/export?' + qs, '_blank');
 }
 function copy(text) { navigator.clipboard.writeText(text); }
+
+// ---------- CSV import (same column names as export) ----------
+function parseCSV(text) {
+  // Simple RFC-4180-ish parser: handles quoted fields + escaped quotes ""
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; } else { inQ = false; }
+      } else field += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i+1] === '\n') i++;
+        row.push(field); field = '';
+        if (row.length && row.some(v => v !== '')) rows.push(row);
+        row = [];
+      } else field += c;
+    }
+  }
+  if (field || row.length) { row.push(field); if (row.some(v => v !== '')) rows.push(row); }
+  if (!rows.length) return [];
+  const headers = rows.shift().map(h => h.trim());
+  return rows.map(r => {
+    const o = {};
+    headers.forEach((h, i) => { o[h] = r[i] ?? ''; });
+    return o;
+  });
+}
+
+async function importLeads(ev) {
+  const file = ev.target.files?.[0];
+  ev.target.value = '';
+  if (!file) return;
+  const text = await file.text();
+  let leads;
+  try {
+    if (file.name.toLowerCase().endsWith('.json')) {
+      const parsed = JSON.parse(text);
+      leads = Array.isArray(parsed) ? parsed : (parsed.leads || []);
+    } else {
+      leads = parseCSV(text);
+    }
+  } catch (e) { alert('Parse failed: ' + e.message); return; }
+  if (!leads.length) { alert('No rows found in file'); return; }
+  if (!confirm(`Import ${leads.length} leads into fleet master DB?`)) return;
+  try {
+    const r = await fetch('/api/admin/leads/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-token': token },
+      body: JSON.stringify({ leads })
+    });
+    const d = await r.json();
+    if (!r.ok) { alert('Import failed: ' + (d.error || r.status)); return; }
+    alert(`Imported ${d.inserted} new (${d.skipped} dup) from ${d.total} rows`);
+    loadCurrent();
+  } catch (e) { alert('Import failed: ' + e.message); }
+}
 
 // need token in query for CSV download (can't send header)
 // fall back: server also accepts ?token= via query

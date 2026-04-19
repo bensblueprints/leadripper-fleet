@@ -377,6 +377,37 @@ app.get('/api/admin/leads/export', requireAdmin, (req, res) => {
   res.send(csv);
 });
 
+// CSV / JSON import — mirrors export format
+app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
+  const { leads = [] } = req.body || {};
+  if (!Array.isArray(leads) || !leads.length) return res.status(400).json({ error: 'leads[] required' });
+  const ins = db.prepare(`
+    INSERT OR IGNORE INTO leads (name, phone, email, website, address, city, state,
+      industry, gcid, search_term, google_category_raw, rating, reviews, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const t = now();
+  let inserted = 0, skipped = 0;
+  const txn = db.transaction(() => {
+    for (const l of leads) {
+      const r = ins.run(
+        l.name || l.business_name || null,
+        l.phone || null, l.email || null, l.website || null,
+        l.address || null, l.city || null, l.state || null,
+        l.industry || null, l.gcid || null,
+        l.search_term || l.industry || null,
+        l.google_category_raw || null,
+        l.rating == null || l.rating === '' ? null : +l.rating,
+        l.reviews == null || l.reviews === '' ? null : +l.reviews,
+        t
+      );
+      if (r.changes) inserted++; else skipped++;
+    }
+  });
+  txn();
+  res.json({ ok: true, inserted, skipped, total: leads.length });
+});
+
 // Industry + city metadata (needed by dashboard)
 app.get('/api/meta/industries', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'industries.json'));
