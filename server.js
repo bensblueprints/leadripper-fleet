@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const db = require('./db');
 
@@ -10,7 +11,19 @@ app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'change-me-in-coolify';
-const LICENSE_HASHES = (process.env.LICENSE_HASHES || '').split(',').map(s => s.trim()).filter(Boolean);
+
+// Load license hashes from bundled file + optional env override
+let LICENSE_HASHES = [];
+try {
+  const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, 'license-hashes.json'), 'utf8'));
+  if (Array.isArray(bundled)) LICENSE_HASHES = LICENSE_HASHES.concat(bundled);
+} catch (e) { console.warn('[fleet] no bundled license-hashes.json'); }
+if (process.env.LICENSE_HASHES) {
+  LICENSE_HASHES = LICENSE_HASHES.concat(
+    process.env.LICENSE_HASHES.split(',').map(s => s.trim()).filter(Boolean)
+  );
+}
+LICENSE_HASHES = [...new Set(LICENSE_HASHES)];
 
 function now() { return Math.floor(Date.now() / 1000); }
 
