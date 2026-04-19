@@ -322,7 +322,7 @@ async function renderFleet() {
       </div>
       <div class="panel-body" style="padding:0;overflow-x:auto;">
         <table>
-          <thead><tr><th>Label</th><th>Status</th><th>CPU</th><th>RAM</th><th>Caps</th><th>Job</th><th>Leads</th><th>Last Seen</th><th></th></tr></thead>
+          <thead><tr><th>Label</th><th>Status</th><th>CPU</th><th>RAM</th><th>Caps</th><th>Active Job</th><th>Leads</th><th>Last Seen</th><th></th></tr></thead>
           <tbody>
             ${nodes.nodes.map(n => `
               <tr>
@@ -335,7 +335,10 @@ async function renderFleet() {
                 <td>${bar(n.cpu_pct)}</td>
                 <td>${bar(n.ram_pct)}</td>
                 <td class="muted" style="font-size:10px">CPU ${n.cpu_cap}%<br>RAM ${n.ram_cap}%</td>
-                <td>${n.current_job_id ? '#'+n.current_job_id : '<span class="muted">—</span>'}</td>
+                <td>${n.current_job_id || n.current_job_industry
+                  ? `<div>${n.current_job_id?`#${n.current_job_id} `:''}<span style="color:#00bfa0">${esc(n.current_job_industry||'—')}</span></div>
+                     <div class="muted" style="font-size:10px">${esc(n.current_job_city||'')} · <strong style="color:#7dffb6">${n.current_job_leads||0}</strong> leads</div>`
+                  : '<span class="muted">idle</span>'}</td>
                 <td>${(n.leads_harvested||0).toLocaleString()}<br><span class="muted" style="font-size:10px">${n.jobs_done||0} jobs</span></td>
                 <td class="muted">${fmt(n.last_seen)}</td>
                 <td style="white-space:nowrap">

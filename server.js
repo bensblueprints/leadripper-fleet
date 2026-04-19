@@ -59,7 +59,8 @@ function requireWorker(req, res, next) {
 
 // Node registers / checks in. Creates row on first contact, updates on repeat.
 app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
-  const { hostname, os, app_version, cpu_pct, ram_pct, cpu_cap, ram_cap, label } = req.body || {};
+  const { hostname, os, app_version, cpu_pct, ram_pct, cpu_cap, ram_cap, label,
+          current_job_leads, current_job_industry, current_job_city } = req.body || {};
   const t = now();
 
   let node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
@@ -84,6 +85,9 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
           cpu_pct = ?, ram_pct = ?,
           cpu_cap = COALESCE(?, cpu_cap),
           ram_cap = COALESCE(?, ram_cap),
+          current_job_leads = ?,
+          current_job_industry = ?,
+          current_job_city = ?,
           status = CASE WHEN paused = 1 THEN 'paused'
                         WHEN current_job_id IS NOT NULL THEN 'working'
                         ELSE 'idle' END,
@@ -91,7 +95,11 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
       WHERE id = ?
     `).run(hostname || null, os || null, app_version || null,
       cpu_pct ?? node.cpu_pct, ram_pct ?? node.ram_pct,
-      cpu_cap, ram_cap, t, node.id);
+      cpu_cap, ram_cap,
+      +(current_job_leads||0),
+      current_job_industry || null,
+      current_job_city || null,
+      t, node.id);
   }
 
   // Deliver pending commands

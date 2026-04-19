@@ -64,6 +64,14 @@ try {
   }
 } catch {}
 
+// Migration: live progress fields on nodes
+try {
+  const ncols = db.prepare(`PRAGMA table_info(nodes)`).all().map(c => c.name);
+  if (!ncols.includes('current_job_leads')) db.exec(`ALTER TABLE nodes ADD COLUMN current_job_leads INTEGER DEFAULT 0`);
+  if (!ncols.includes('current_job_industry')) db.exec(`ALTER TABLE nodes ADD COLUMN current_job_industry TEXT`);
+  if (!ncols.includes('current_job_city')) db.exec(`ALTER TABLE nodes ADD COLUMN current_job_city TEXT`);
+} catch {}
+
 // Migration: enrichment + new metrics + AI analysis columns on leads
 try {
   const lcols = db.prepare(`PRAGMA table_info(leads)`).all().map(c => c.name);
