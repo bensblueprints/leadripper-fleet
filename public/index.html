@@ -237,6 +237,44 @@ function aiBadge(score) {
   else if (s >= 40) { bg = 'rgba(255,179,71,.18)'; fg = '#ffd17a'; }
   return `<span style="display:inline-block;min-width:28px;padding:1px 6px;border-radius:3px;background:${bg};color:${fg};font-weight:700;font-size:11px;text-align:center">${s}</span>`;
 }
+function histoRow(label, count, total) {
+  const pct = total ? Math.round((count/total)*100) : 0;
+  return `<div style="display:flex;align-items:center;gap:6px;font-size:11px;margin:2px 0">
+    <span style="width:36px;color:#ffb347">${label}</span>
+    <span style="flex:1;height:6px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden"><span style="display:block;height:100%;width:${pct}%;background:linear-gradient(90deg,#ffb347,#ff6b6b)"></span></span>
+    <span class="muted" style="width:52px;text-align:right">${count||0} (${pct}%)</span>
+  </div>`;
+}
+function toggleLeadDetail(id) {
+  const el = document.getElementById('lead-detail-'+id);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function renderLeadDetail(l) {
+  const totalReviews = (+l.reviews_1star||0)+(+l.reviews_2star||0)+(+l.reviews_3star||0)+(+l.reviews_4star||0)+(+l.reviews_5star||0);
+  const hasHisto = totalReviews > 0;
+  const hrs = l.business_hours ? String(l.business_hours).split(/\s*\|\s*|\n/).filter(Boolean) : [];
+  return `
+    <div style="padding:12px 16px;background:rgba(0,191,160,.04);border-top:1px solid rgba(0,191,160,.15);border-bottom:1px solid rgba(0,191,160,.15);display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;font-size:11px">
+      <div>
+        <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">REVIEW HISTOGRAM</div>
+        ${hasHisto ? [5,4,3,2,1].map(s => histoRow(s+'★', +l['reviews_'+s+'star']||0, totalReviews)).join('') : '<span class="muted">No histogram scraped yet</span>'}
+        <div class="muted" style="margin-top:4px">Total: ${l.reviews||totalReviews||0} reviews${l.rating?` · avg ${l.rating}★`:''}</div>
+      </div>
+      <div>
+        <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">BUSINESS HOURS</div>
+        ${hrs.length ? hrs.map(h => `<div style="margin:2px 0">${esc(h)}</div>`).join('') : '<span class="muted">Not scraped</span>'}
+        ${l.address ? `<div style="margin-top:8px;color:#00bfa0;font-weight:700">ADDRESS</div><div>${esc(l.address)}</div>` : ''}
+      </div>
+      <div>
+        <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">AI ANALYSIS</div>
+        ${(l.ai_seo_score!=null || l.ai_design_score!=null) ? `
+          <div style="margin:2px 0">SEO: ${aiBadge(l.ai_seo_score)} ${l.ai_seo_notes?`<span class="muted">${esc(l.ai_seo_notes)}</span>`:''}</div>
+          <div style="margin:2px 0">Design: ${aiBadge(l.ai_design_score)} ${l.ai_design_notes?`<span class="muted">${esc(l.ai_design_notes)}</span>`:''}</div>
+          ${l.ai_provider?`<div class="muted" style="margin-top:4px">via ${esc(l.ai_provider)}${l.ai_analyzed_at?` · ${fmt(l.ai_analyzed_at)}`:''}</div>`:''}
+        ` : '<span class="muted">Not analyzed</span>'}
+      </div>
+    </div>`;
+}
 
 function showView(v) {
   currentView = v;
@@ -691,11 +729,11 @@ async function renderLeads() {
               const status = l.website_status || 'unchecked';
               const statusColor = status === 'live' ? '#3eff9a' : status === 'broken' || status === 'hacked' ? '#ff5577' : status === 'no-website' ? '#7a8796' : '#ffb347';
               return `
-              <tr class="lead-row">
+              <tr class="lead-row" style="cursor:pointer" onclick="toggleLeadDetail(${l.id})">
                 <td>${esc(l.name||'—')}</td>
-                <td>${l.phone ? `<a href="tel:${esc(l.phone)}" style="color:var(--text)">${esc(l.phone)}</a><span class="copy-icon" onclick="copy('${esc(l.phone)}')" title="Copy">⎘</span>` : '<span class="muted">—</span>'}</td>
-                <td>${l.email ? `<a href="mailto:${esc(l.email)}" style="color:var(--cyan)">${esc(l.email)}</a>` : '<span class="muted">—</span>'}</td>
-                <td>${l.website ? `<a href="${esc(l.website)}" target="_blank" style="color:var(--purple)">${esc(l.website.replace(/^https?:\/\//,'').slice(0,40))}</a>` : '<span class="muted">—</span>'}</td>
+                <td>${l.phone ? `<a href="tel:${esc(l.phone)}" style="color:var(--text)" onclick="event.stopPropagation()">${esc(l.phone)}</a><span class="copy-icon" onclick="event.stopPropagation();copy('${esc(l.phone)}')" title="Copy">⎘</span>` : '<span class="muted">—</span>'}</td>
+                <td>${l.email ? `<a href="mailto:${esc(l.email)}" style="color:var(--cyan)" onclick="event.stopPropagation()">${esc(l.email)}</a>` : '<span class="muted">—</span>'}</td>
+                <td>${l.website ? `<a href="${esc(l.website)}" target="_blank" style="color:var(--purple)" onclick="event.stopPropagation()">${esc(l.website.replace(/^https?:\/\//,'').slice(0,40))}</a>` : '<span class="muted">—</span>'}</td>
                 <td>${l.website_platform ? `<span class="status" style="background:rgba(0,220,255,.12);color:#6fdfff">${esc(l.website_platform)}</span>` : '<span class="muted">—</span>'}</td>
                 <td><span class="status" style="background:rgba(255,255,255,.05);color:${statusColor}">${esc(status)}</span></td>
                 <td>${tagHtml || '<span class="muted">—</span>'}</td>
@@ -705,7 +743,8 @@ async function renderLeads() {
                 <td>${aiBadge(l.ai_seo_score)}</td>
                 <td>${aiBadge(l.ai_design_score)}</td>
                 <td class="muted" style="font-size:10px">${fmt(l.created_at)}</td>
-              </tr>`;
+              </tr>
+              <tr id="lead-detail-${l.id}" style="display:none"><td colspan="13" style="padding:0">${renderLeadDetail(l)}</td></tr>`;
             }).join('') || '<tr><td colspan="13" class="muted" style="text-align:center;padding:24px">No leads yet.</td></tr>'}
           </tbody>
         </table>
