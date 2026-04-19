@@ -183,7 +183,10 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let tokenEl = $('admin-token');
-let token = localStorage.getItem('fleet_token') || '';
+// token precedence: ?t=... query param > localStorage
+const urlToken = new URLSearchParams(location.search).get('t');
+let token = urlToken || localStorage.getItem('fleet_token') || '';
+if (urlToken) localStorage.setItem('fleet_token', urlToken);
 tokenEl.value = token;
 
 tokenEl.addEventListener('change', () => {
