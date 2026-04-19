@@ -17,6 +17,7 @@
     --green: #3ddc84;
     --amber: #ffb020;
     --red: #ff5c5c;
+    --purple: #a78bfa;
   }
   * { box-sizing: border-box; }
   body {
@@ -27,135 +28,89 @@
     font-size: 13px;
   }
   header {
-    padding: 14px 22px;
+    padding: 12px 22px;
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
     background: linear-gradient(180deg, #0e141c, #0a0e14);
+    position: sticky;
+    top: 0;
+    z-index: 100;
   }
-  header h1 {
-    margin: 0;
-    font-size: 16px;
-    letter-spacing: 2px;
-    color: var(--cyan);
-  }
+  header h1 { margin: 0; font-size: 16px; letter-spacing: 2px; color: var(--cyan); }
   header h1 span { color: var(--muted); font-weight: normal; }
   .token-input {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 6px 10px;
-    font-family: inherit;
-    font-size: 12px;
-    border-radius: 4px;
-    width: 280px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); padding: 6px 10px;
+    font-family: inherit; font-size: 12px; border-radius: 4px; width: 280px;
   }
-  main { padding: 22px; max-width: 1400px; margin: 0 auto; }
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 12px;
-    margin-bottom: 22px;
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); padding: 0 22px; background: var(--panel-2); }
+  .tab {
+    padding: 10px 18px; cursor: pointer; font-size: 11px; letter-spacing: 2px;
+    color: var(--muted); text-transform: uppercase; border-bottom: 2px solid transparent;
   }
-  .stat {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 14px 16px;
-  }
-  .stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-  .stat .value { font-size: 22px; color: var(--cyan); margin-top: 6px; font-weight: 600; }
-  .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 22px; }
-  @media (max-width: 1000px) { .grid-2 { grid-template-columns: 1fr; } }
+  .tab.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+  .tab:hover { color: var(--text); }
 
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    margin-bottom: 22px;
-  }
+  main { padding: 22px; max-width: 1600px; margin: 0 auto; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+  .stat .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+  .stat .value { font-size: 20px; color: var(--cyan); margin-top: 4px; font-weight: 600; }
+
+  .grid-2 { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 1100px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 20px; }
   .panel-header {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
   }
-  .panel-header h2 {
-    margin: 0;
-    font-size: 13px;
-    letter-spacing: 2px;
-    color: var(--cyan);
-    text-transform: uppercase;
-  }
-  .panel-body { padding: 16px; }
+  .panel-header h2 { margin: 0; font-size: 12px; letter-spacing: 2px; color: var(--cyan); text-transform: uppercase; }
+  .panel-body { padding: 14px; }
 
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td {
-    padding: 8px 10px;
-    text-align: left;
-    border-bottom: 1px solid var(--border);
-  }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--border); }
   th { color: var(--muted); font-weight: normal; text-transform: uppercase; font-size: 10px; letter-spacing: 1px; }
   tr:hover td { background: rgba(0, 229, 255, 0.03); }
 
   .status {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
   }
-  .status.idle { background: rgba(61, 220, 132, 0.12); color: var(--green); }
-  .status.working { background: rgba(0, 229, 255, 0.12); color: var(--cyan); }
+  .status.idle, .status.queued { background: rgba(122, 135, 150, 0.12); color: var(--muted); }
+  .status.working, .status.running { background: rgba(0, 229, 255, 0.12); color: var(--cyan); }
   .status.offline { background: rgba(122, 135, 150, 0.12); color: var(--muted); }
   .status.paused { background: rgba(255, 176, 32, 0.12); color: var(--amber); }
-  .status.queued { background: rgba(122, 135, 150, 0.12); color: var(--muted); }
-  .status.running { background: rgba(0, 229, 255, 0.12); color: var(--cyan); }
   .status.done { background: rgba(61, 220, 132, 0.12); color: var(--green); }
   .status.failed { background: rgba(255, 92, 92, 0.12); color: var(--red); }
   .status.cancelled { background: rgba(122, 135, 150, 0.12); color: var(--muted); }
 
   button {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 5px 10px;
-    border-radius: 3px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 11px;
-    transition: all 0.15s;
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+    padding: 5px 10px; border-radius: 3px; cursor: pointer;
+    font-family: inherit; font-size: 11px; transition: all 0.15s;
   }
   button:hover { border-color: var(--cyan); color: var(--cyan); }
   button.primary { background: var(--cyan); color: var(--bg); border-color: var(--cyan); }
   button.primary:hover { background: var(--cyan-dim); border-color: var(--cyan-dim); }
   button.danger { color: var(--red); border-color: rgba(255,92,92,0.3); }
   button.danger:hover { border-color: var(--red); }
+  button.amber { color: var(--amber); border-color: rgba(255,176,32,0.3); }
+  button.amber:hover { border-color: var(--amber); }
+  button.green { color: var(--green); border-color: rgba(61,220,132,0.3); }
+  button.green:hover { border-color: var(--green); }
 
   input, select, textarea {
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 8px 10px;
-    font-family: inherit;
-    font-size: 12px;
-    border-radius: 4px;
-    width: 100%;
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    padding: 7px 10px; font-family: inherit; font-size: 12px; border-radius: 4px; width: 100%;
   }
   input:focus, select:focus, textarea:focus { outline: none; border-color: var(--cyan); }
-  label { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-  .form-row { margin-bottom: 12px; }
+  label { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; margin-top: 10px; }
+  label:first-child { margin-top: 0; }
 
-  .dot {
-    display: inline-block;
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    margin-right: 6px;
-    vertical-align: middle;
-  }
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
   .dot.online { background: var(--green); box-shadow: 0 0 8px var(--green); }
   .dot.offline { background: var(--muted); }
   .dot.working { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); animation: pulse 1.5s infinite; }
@@ -166,6 +121,30 @@
 
   .muted { color: var(--muted); }
   .unauth { padding: 40px; text-align: center; color: var(--muted); }
+
+  /* Industry picker */
+  .picker { position: relative; }
+  .picker-dropdown {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 50;
+    background: var(--panel); border: 1px solid var(--cyan); border-top: none;
+    max-height: 280px; overflow-y: auto; border-radius: 0 0 4px 4px;
+  }
+  .picker-dropdown[hidden] { display: none; }
+  .picker-item {
+    padding: 7px 10px; cursor: pointer; font-size: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .picker-item:hover, .picker-item.active { background: rgba(0, 229, 255, 0.08); color: var(--cyan); }
+  .picker-item .gcid { color: var(--muted); font-size: 10px; margin-left: 6px; }
+  .picker-item mark { background: rgba(0, 229, 255, 0.25); color: var(--cyan); padding: 0; }
+
+  .preset-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .preset-row button { font-size: 10px; padding: 4px 8px; }
+  .small { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+  .lead-row td { font-size: 11px; }
+  .copy-icon { cursor: pointer; color: var(--muted); margin-left: 4px; font-size: 10px; }
+  .copy-icon:hover { color: var(--cyan); }
 </style>
 </head>
 <body>
@@ -173,6 +152,13 @@
   <h1>LEADRIPPER <span>// FLEET CONTROL</span></h1>
   <input type="password" class="token-input" id="admin-token" placeholder="Admin token" />
 </header>
+
+<div class="tabs">
+  <div class="tab active" data-view="fleet" onclick="showView('fleet')">Fleet</div>
+  <div class="tab" data-view="dispatch" onclick="showView('dispatch')">Dispatch</div>
+  <div class="tab" data-view="jobs" onclick="showView('jobs')">Jobs</div>
+  <div class="tab" data-view="leads" onclick="showView('leads')">Leads</div>
+</div>
 
 <main>
   <div id="app">
@@ -183,26 +169,22 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let tokenEl = $('admin-token');
-// token precedence: ?t=... query param > localStorage
 const urlToken = new URLSearchParams(location.search).get('t');
 let token = urlToken || localStorage.getItem('fleet_token') || '';
 if (urlToken) localStorage.setItem('fleet_token', urlToken);
 tokenEl.value = token;
+tokenEl.addEventListener('change', () => { token = tokenEl.value.trim(); localStorage.setItem('fleet_token', token); loadCurrent(); });
 
-tokenEl.addEventListener('change', () => {
-  token = tokenEl.value.trim();
-  localStorage.setItem('fleet_token', token);
-  loadAll();
-});
+let currentView = 'fleet';
+let INDUSTRIES = [];
+let CITIES = [];
+let selectedIndustry = null;
+let pickedCities = [];
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-admin-token': token,
-      ...(opts.headers || {})
-    }
+    headers: { 'Content-Type': 'application/json', 'x-admin-token': token, ...(opts.headers || {}) }
   });
   if (res.status === 401) throw new Error('unauthorized');
   return res.json();
@@ -210,173 +192,444 @@ async function api(path, opts = {}) {
 
 function fmt(ts) {
   if (!ts) return '—';
-  const d = new Date(ts * 1000);
   const s = Math.floor((Date.now() / 1000) - ts);
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s/60)}m ago`;
   if (s < 86400) return `${Math.floor(s/3600)}h ago`;
-  return d.toLocaleString();
+  return new Date(ts * 1000).toLocaleString();
 }
-
 function bar(pct) {
   const p = Math.max(0, Math.min(100, pct || 0));
   return `<span class="bar"><span class="bar-fill" style="width:${p}%"></span></span> <span class="muted">${p.toFixed(0)}%</span>`;
 }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-async function loadAll() {
-  if (!token) {
-    $('app').innerHTML = '<div class="unauth">Enter admin token above to load fleet data.</div>';
-    return;
-  }
+function showView(v) {
+  currentView = v;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  loadCurrent();
+}
+
+async function loadCurrent() {
+  if (!token) { $('app').innerHTML = '<div class="unauth">Enter admin token above to load fleet data.</div>'; return; }
   try {
-    const [stats, nodes, jobs] = await Promise.all([
-      api('/api/admin/stats'),
-      api('/api/admin/nodes'),
-      api('/api/admin/jobs?limit=50')
-    ]);
-    render(stats, nodes.nodes, jobs.jobs);
+    if (currentView === 'fleet') await renderFleet();
+    else if (currentView === 'dispatch') await renderDispatch();
+    else if (currentView === 'jobs') await renderJobs();
+    else if (currentView === 'leads') await renderLeads();
   } catch (e) {
     $('app').innerHTML = `<div class="unauth">Error: ${e.message}. Check token.</div>`;
   }
 }
 
-function render(stats, nodes, jobs) {
+// ============== FLEET VIEW ==============
+async function renderFleet() {
+  const [stats, nodes] = await Promise.all([api('/api/admin/stats'), api('/api/admin/nodes')]);
   $('app').innerHTML = `
     <div class="stats">
-      <div class="stat"><div class="label">Nodes Online</div><div class="value">${(stats.nodes.working||0)+(stats.nodes.idle||0)+(stats.nodes.paused||0)} <span class="muted" style="font-size:14px">/ ${stats.nodes.total||0}</span></div></div>
+      <div class="stat"><div class="label">Nodes Online</div><div class="value">${(stats.nodes.working||0)+(stats.nodes.idle||0)+(stats.nodes.paused||0)} <span class="muted" style="font-size:12px">/ ${stats.nodes.total||0}</span></div></div>
       <div class="stat"><div class="label">Working</div><div class="value">${stats.nodes.working||0}</div></div>
-      <div class="stat"><div class="label">Queued Jobs</div><div class="value">${stats.jobs.queued||0}</div></div>
+      <div class="stat"><div class="label">Queued</div><div class="value">${stats.jobs.queued||0}</div></div>
       <div class="stat"><div class="label">Running</div><div class="value">${stats.jobs.running||0}</div></div>
-      <div class="stat"><div class="label">Leads (24h)</div><div class="value">${(stats.leads_24h||0).toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Leads 24h</div><div class="value">${(stats.leads_24h||0).toLocaleString()}</div></div>
       <div class="stat"><div class="label">Leads Total</div><div class="value">${(stats.leads_total||0).toLocaleString()}</div></div>
     </div>
-
-    <div class="grid-2">
-      <div>
-        <div class="panel">
-          <div class="panel-header"><h2>Nodes (${nodes.length})</h2><button onclick="loadAll()">Refresh</button></div>
-          <div class="panel-body" style="padding:0;overflow-x:auto;">
-            <table>
-              <thead><tr>
-                <th>Label</th><th>Status</th><th>CPU</th><th>RAM</th><th>Job</th><th>Leads</th><th>Last Seen</th><th></th>
-              </tr></thead>
-              <tbody>
-                ${nodes.map(n => `
-                  <tr>
-                    <td>
-                      <span class="dot ${n.status==='offline'?'offline':n.status==='working'?'working':'online'}"></span>
-                      ${n.label || n.hostname || n.machine_id.slice(0,8)}
-                      <div class="muted" style="font-size:10px;margin-top:2px">${n.hostname||''} · v${n.app_version||'?'}</div>
-                    </td>
-                    <td><span class="status ${n.status}">${n.status}</span></td>
-                    <td>${bar(n.cpu_pct)}<br><span class="muted" style="font-size:10px">cap ${n.cpu_cap}%</span></td>
-                    <td>${bar(n.ram_pct)}<br><span class="muted" style="font-size:10px">cap ${n.ram_cap}%</span></td>
-                    <td>${n.current_job_id ? '#'+n.current_job_id : '<span class="muted">—</span>'}</td>
-                    <td>${(n.leads_harvested||0).toLocaleString()}<br><span class="muted" style="font-size:10px">${n.jobs_done||0} jobs</span></td>
-                    <td class="muted">${fmt(n.last_seen)}</td>
-                    <td style="white-space:nowrap">
-                      ${n.status==='paused'
-                        ? `<button onclick="nodeAction(${n.id},'resume')">Resume</button>`
-                        : `<button onclick="nodeAction(${n.id},'pause')">Pause</button>`}
-                      <button class="danger" onclick="nodeAction(${n.id},'kill')">Kill</button>
-                    </td>
-                  </tr>
-                `).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No nodes yet. Fire up a worker.</td></tr>'}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header"><h2>Recent Jobs</h2></div>
-          <div class="panel-body" style="padding:0;overflow-x:auto;">
-            <table>
-              <thead><tr><th>#</th><th>Industry</th><th>City</th><th>Node</th><th>Status</th><th>Leads</th><th>Age</th><th></th></tr></thead>
-              <tbody>
-                ${jobs.map(j => `
-                  <tr>
-                    <td>#${j.id}</td>
-                    <td>${j.industry}</td>
-                    <td>${j.city}${j.state?', '+j.state:''}</td>
-                    <td>${j.assigned_node_id ? '#'+j.assigned_node_id : '<span class="muted">—</span>'}</td>
-                    <td><span class="status ${j.status}">${j.status}</span></td>
-                    <td>${j.leads_found||0}</td>
-                    <td class="muted">${fmt(j.created_at)}</td>
-                    <td>${(j.status==='queued'||j.status==='running')
-                      ? `<button class="danger" onclick="cancelJob(${j.id})">Cancel</button>` : ''}</td>
-                  </tr>
-                `).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No jobs dispatched yet.</td></tr>'}
-              </tbody>
-            </table>
-          </div>
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Nodes (${nodes.nodes.length})</h2>
+        <div>
+          <button class="amber" onclick="broadcast('pause')">Pause All</button>
+          <button class="green" onclick="broadcast('resume')">Resume All</button>
+          <button class="danger" onclick="broadcast('kill')">Kill All</button>
         </div>
       </div>
-
-      <div>
-        <div class="panel">
-          <div class="panel-header"><h2>Dispatch Job</h2></div>
-          <div class="panel-body">
-            <div class="form-row">
-              <label>Industry (GCID or name)</label>
-              <input id="d-industry" placeholder="Plumber" />
-            </div>
-            <div class="form-row">
-              <label>Cities (one per line)</label>
-              <textarea id="d-cities" rows="6" placeholder="Miami&#10;Tampa&#10;Orlando"></textarea>
-            </div>
-            <div class="form-row">
-              <label>State (optional)</label>
-              <input id="d-state" placeholder="FL" />
-            </div>
-            <div class="form-row">
-              <label>Target node (optional)</label>
-              <select id="d-node">
-                <option value="">Any idle node</option>
-                ${nodes.map(n => `<option value="${n.id}">${n.label||n.hostname||'#'+n.id}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-row">
-              <label>Priority</label>
-              <input id="d-priority" type="number" value="0" />
-            </div>
-            <button class="primary" style="width:100%" onclick="dispatch()">Dispatch</button>
-          </div>
-        </div>
+      <div class="panel-body" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Label</th><th>Status</th><th>CPU</th><th>RAM</th><th>Caps</th><th>Job</th><th>Leads</th><th>Last Seen</th><th></th></tr></thead>
+          <tbody>
+            ${nodes.nodes.map(n => `
+              <tr>
+                <td>
+                  <span class="dot ${n.status==='offline'?'offline':n.status==='working'?'working':'online'}"></span>
+                  ${esc(n.label || n.hostname || n.machine_id.slice(0,8))}
+                  <div class="muted" style="font-size:10px;margin-top:2px">${esc(n.hostname||'')} · v${esc(n.app_version||'?')}</div>
+                </td>
+                <td><span class="status ${n.status}">${n.status}</span></td>
+                <td>${bar(n.cpu_pct)}</td>
+                <td>${bar(n.ram_pct)}</td>
+                <td class="muted" style="font-size:10px">CPU ${n.cpu_cap}%<br>RAM ${n.ram_cap}%</td>
+                <td>${n.current_job_id ? '#'+n.current_job_id : '<span class="muted">—</span>'}</td>
+                <td>${(n.leads_harvested||0).toLocaleString()}<br><span class="muted" style="font-size:10px">${n.jobs_done||0} jobs</span></td>
+                <td class="muted">${fmt(n.last_seen)}</td>
+                <td style="white-space:nowrap">
+                  <button onclick="editNode(${n.id}, '${esc(n.label||'')}', ${n.cpu_cap}, ${n.ram_cap})">Edit</button>
+                  ${n.status==='paused'
+                    ? `<button onclick="nodeAction(${n.id},'resume')">Resume</button>`
+                    : `<button onclick="nodeAction(${n.id},'pause')">Pause</button>`}
+                  <button class="danger" onclick="nodeAction(${n.id},'kill')">Kill</button>
+                </td>
+              </tr>
+            `).join('') || '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">No nodes yet. Enable Fleet Mode in a licensed desktop.</td></tr>'}
+          </tbody>
+        </table>
       </div>
     </div>
   `;
 }
 
-async function dispatch() {
-  const industry = $('d-industry').value.trim();
-  const cities = $('d-cities').value.split('\n').map(s => s.trim()).filter(Boolean);
-  const state = $('d-state').value.trim();
-  const target_node_id = $('d-node').value ? +$('d-node').value : null;
-  const priority = +$('d-priority').value || 0;
-  if (!industry || !cities.length) return alert('industry + at least one city required');
-  const r = await api('/api/admin/dispatch', {
-    method: 'POST',
-    body: JSON.stringify({ industry, cities, state, target_node_id, priority })
-  });
-  alert(`Dispatched ${r.dispatched} job(s).`);
-  $('d-cities').value = '';
-  loadAll();
+async function broadcast(action) {
+  if (!confirm(`${action.toUpperCase()} all nodes?`)) return;
+  const r = await api(`/api/admin/broadcast/${action}`, { method: 'POST' });
+  alert(`${action} sent to ${r.affected} node(s).`);
+  loadCurrent();
 }
-
-async function cancelJob(id) {
-  if (!confirm(`Cancel job #${id}?`)) return;
-  await api(`/api/admin/jobs/${id}/cancel`, { method: 'POST' });
-  loadAll();
-}
-
 async function nodeAction(id, action) {
   if (action === 'kill' && !confirm(`Kill worker on node #${id}?`)) return;
   await api(`/api/admin/nodes/${id}/${action}`, { method: 'POST' });
-  loadAll();
+  loadCurrent();
+}
+async function editNode(id, label, cpuCap, ramCap) {
+  const newLabel = prompt('Label:', label);
+  if (newLabel === null) return;
+  const cpu = prompt('CPU cap %:', cpuCap);
+  if (cpu === null) return;
+  const ram = prompt('RAM cap %:', ramCap);
+  if (ram === null) return;
+  await api(`/api/admin/nodes/${id}`, { method: 'PATCH', body: JSON.stringify({ label: newLabel, cpu_cap: +cpu, ram_cap: +ram }) });
+  loadCurrent();
 }
 
-loadAll();
-setInterval(loadAll, 5000);
+// ============== DISPATCH VIEW ==============
+async function renderDispatch() {
+  await ensureMeta();
+  const nodes = await api('/api/admin/nodes');
+  const idleNodes = nodes.nodes.filter(n => n.status !== 'offline');
+
+  $('app').innerHTML = `
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-header"><h2>Dispatch Scrape Job</h2></div>
+        <div class="panel-body">
+          <label>Industry (searchable · ${INDUSTRIES.length.toLocaleString()} GMB categories)</label>
+          <div class="picker" id="industry-picker">
+            <input id="d-industry" placeholder="Type to search…" autocomplete="off">
+            <div class="picker-dropdown" id="industry-dropdown" hidden></div>
+          </div>
+
+          <label>Max Results Per City</label>
+          <input id="d-max" type="number" value="20" min="5" max="500">
+
+          <label>Cities (one per line — "City, ST" or just "City")</label>
+          <textarea id="d-cities" rows="8" placeholder="Miami, FL&#10;Austin, TX&#10;Denver, CO"></textarea>
+
+          <div class="small">City presets (all 29,738 US cities loaded):</div>
+          <div class="preset-row">
+            <button onclick="loadPreset(25)">Top 25</button>
+            <button onclick="loadPreset(50)">Top 50</button>
+            <button onclick="loadPreset(100)">Top 100</button>
+            <button onclick="loadPreset(250)">Top 250</button>
+            <button onclick="loadPreset(500)">Top 500</button>
+            <button onclick="loadPreset(1000)">Top 1000</button>
+            <button class="green" onclick="loadPreset(0)">ALL ${CITIES.length.toLocaleString()}</button>
+          </div>
+
+          <label>Filter by State</label>
+          <select id="d-state-filter" onchange="filterCitiesByState(this.value)">
+            <option value="">— select state —</option>
+          </select>
+
+          <label>Target Node (or any idle)</label>
+          <select id="d-node">
+            <option value="">Any idle node</option>
+            ${idleNodes.map(n => `<option value="${n.id}">${esc(n.label||n.hostname||'#'+n.id)} (${n.status})</option>`).join('')}
+          </select>
+
+          <label>Priority</label>
+          <input id="d-priority" type="number" value="0">
+
+          <button class="primary" style="width:100%;margin-top:14px;padding:10px" onclick="dispatch()">Dispatch to Fleet</button>
+          <div class="small" id="d-summary"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header"><h2>Fleet Status</h2></div>
+        <div class="panel-body">
+          <div class="muted" style="font-size:11px">Nodes online: <b style="color:var(--text)">${idleNodes.length}</b></div>
+          <div class="muted" style="font-size:11px;margin-top:4px">Currently working: <b style="color:var(--cyan)">${idleNodes.filter(n=>n.status==='working').length}</b></div>
+          <div class="muted" style="font-size:11px;margin-top:4px">Available: <b style="color:var(--green)">${idleNodes.filter(n=>n.status==='idle').length}</b></div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+            <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Tips</div>
+            <div style="font-size:11px;color:var(--muted);line-height:1.6">
+              • Each queued city → one job. Jobs are pulled by the first idle worker.<br>
+              • Workers self-throttle to their configured CPU/RAM cap.<br>
+              • Preset "Top N" uses the largest US cities.<br>
+              • Leave Target Node blank to let the fleet load-balance.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  initIndustryPicker();
+  initStateFilter();
+}
+
+async function ensureMeta() {
+  if (!INDUSTRIES.length) {
+    INDUSTRIES = await (await fetch('/api/meta/industries')).json();
+  }
+  if (!CITIES.length) {
+    CITIES = await (await fetch('/api/meta/cities')).json();
+  }
+}
+
+function initIndustryPicker() {
+  const input = $('d-industry');
+  const dropdown = $('industry-dropdown');
+  let active = -1, matches = [];
+  function score(ind, q) {
+    const n = ind.name.toLowerCase();
+    if (n === q) return 100;
+    if (n.startsWith(q)) return 80;
+    if (n.includes(q)) return 40;
+    if (ind.gcid.includes(q.replace(/ /g,'_'))) return 30;
+    return 0;
+  }
+  function show(q) {
+    q = q.trim().toLowerCase();
+    if (!q) { dropdown.hidden = true; matches = []; return; }
+    matches = INDUSTRIES.map(i => ({i, s: score(i, q)}))
+      .filter(x => x.s > 0).sort((a,b)=>b.s-a.s).slice(0,30).map(x=>x.i);
+    if (!matches.length) { dropdown.hidden = true; return; }
+    dropdown.innerHTML = matches.map((m, idx) => `
+      <div class="picker-item ${idx===active?'active':''}" onclick="pickIndustry('${esc(m.name)}','${esc(m.gcid)}')">
+        ${esc(m.name).replace(new RegExp(q,'i'), s=>`<mark>${s}</mark>`)}
+        <span class="gcid">${esc(m.gcid)}</span>
+      </div>
+    `).join('');
+    dropdown.hidden = false;
+  }
+  input.addEventListener('input', () => { active = -1; show(input.value); });
+  input.addEventListener('focus', () => input.value && show(input.value));
+  input.addEventListener('blur', () => setTimeout(() => dropdown.hidden = true, 200));
+  input.addEventListener('keydown', e => {
+    if (e.key==='ArrowDown') { active = Math.min(active+1, matches.length-1); show(input.value); e.preventDefault(); }
+    else if (e.key==='ArrowUp') { active = Math.max(active-1, 0); show(input.value); e.preventDefault(); }
+    else if (e.key==='Enter' && active>=0) { const m = matches[active]; pickIndustry(m.name, m.gcid); e.preventDefault(); }
+    else if (e.key==='Escape') { dropdown.hidden = true; }
+  });
+}
+window.pickIndustry = function(name, gcid) {
+  $('d-industry').value = name;
+  selectedIndustry = { name, gcid };
+  $('industry-dropdown').hidden = true;
+};
+
+function initStateFilter() {
+  const states = [...new Set(CITIES.map(c => c.state))].sort();
+  const sel = $('d-state-filter');
+  for (const s of states) {
+    const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o);
+  }
+}
+
+window.filterCitiesByState = function(st) {
+  if (!st) return;
+  const list = CITIES.filter(c => c.state === st).map(c => `${c.city}, ${c.state}`);
+  $('d-cities').value = list.join('\n');
+  $('d-summary').textContent = `Loaded ${list.length.toLocaleString()} cities in ${st}`;
+};
+
+window.loadPreset = function(n) {
+  // sort cities by population desc, take top N (or all if n=0)
+  const sorted = [...CITIES].sort((a,b) => (b.pop || b.population || 0) - (a.pop || a.population || 0));
+  const picked = n === 0 ? sorted : sorted.slice(0, n);
+  $('d-cities').value = picked.map(c => `${c.city}, ${c.state}`).join('\n');
+  $('d-summary').textContent = `Loaded ${picked.length.toLocaleString()} cities`;
+};
+
+async function dispatch() {
+  const industry = selectedIndustry?.name || $('d-industry').value.trim();
+  const cities = $('d-cities').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const max_results = +$('d-max').value || 20;
+  const target_node_id = $('d-node').value ? +$('d-node').value : null;
+  const priority = +$('d-priority').value || 0;
+  if (!industry || !cities.length) return alert('Industry + at least one city required');
+  if (cities.length > 100 && !confirm(`Dispatch ${cities.length} jobs to fleet?`)) return;
+  const r = await api('/api/admin/dispatch', {
+    method: 'POST',
+    body: JSON.stringify({ industry, cities, target_node_id, priority, max_results })
+  });
+  alert(`Dispatched ${r.dispatched} job(s).`);
+  showView('jobs');
+}
+
+// ============== JOBS VIEW ==============
+let jobsFilter = '';
+async function renderJobs() {
+  const jobs = await api(`/api/admin/jobs?limit=300${jobsFilter ? '&status='+jobsFilter : ''}`);
+  $('app').innerHTML = `
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Jobs</h2>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select onchange="jobsFilter=this.value;loadCurrent()" style="width:140px">
+            <option value="" ${!jobsFilter?'selected':''}>All</option>
+            <option value="queued" ${jobsFilter==='queued'?'selected':''}>Queued</option>
+            <option value="running" ${jobsFilter==='running'?'selected':''}>Running</option>
+            <option value="done" ${jobsFilter==='done'?'selected':''}>Done</option>
+            <option value="failed" ${jobsFilter==='failed'?'selected':''}>Failed</option>
+            <option value="cancelled" ${jobsFilter==='cancelled'?'selected':''}>Cancelled</option>
+          </select>
+          <button class="danger" onclick="cancelAllQueued()">Cancel All Queued</button>
+          <button onclick="loadCurrent()">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>#</th><th>Industry</th><th>City</th><th>Max</th><th>Node</th><th>Status</th><th>Leads</th><th>Age</th><th>Duration</th><th></th></tr></thead>
+          <tbody>
+            ${jobs.jobs.map(j => `
+              <tr>
+                <td>#${j.id}</td>
+                <td>${esc(j.industry)}</td>
+                <td>${esc(j.city)}${j.state?', '+esc(j.state):''}</td>
+                <td class="muted">${j.max_results||20}</td>
+                <td>${j.assigned_node_id ? '#'+j.assigned_node_id : '<span class="muted">—</span>'}</td>
+                <td><span class="status ${j.status}">${j.status}</span></td>
+                <td>${j.leads_found||0}</td>
+                <td class="muted">${fmt(j.created_at)}</td>
+                <td class="muted">${j.started_at && j.finished_at ? (j.finished_at-j.started_at)+'s' : '—'}</td>
+                <td>${(j.status==='queued'||j.status==='running') ? `<button class="danger" onclick="cancelJob(${j.id})">Cancel</button>` : ''}</td>
+              </tr>
+            `).join('') || '<tr><td colspan="10" class="muted" style="text-align:center;padding:24px">No jobs.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+async function cancelJob(id) {
+  if (!confirm(`Cancel job #${id}?`)) return;
+  await api(`/api/admin/jobs/${id}/cancel`, { method: 'POST' });
+  loadCurrent();
+}
+async function cancelAllQueued() {
+  if (!confirm('Cancel every queued job?')) return;
+  const r = await api('/api/admin/jobs/cancel-all', { method: 'POST' });
+  alert(`Cancelled ${r.cancelled} job(s).`);
+  loadCurrent();
+}
+
+// ============== LEADS VIEW ==============
+let leadsQuery = '', leadsIndustry = '', leadsState = '', leadsOffset = 0;
+const LEADS_PAGE = 100;
+async function renderLeads() {
+  const qs = new URLSearchParams();
+  if (leadsQuery) qs.set('q', leadsQuery);
+  if (leadsIndustry) qs.set('industry', leadsIndustry);
+  if (leadsState) qs.set('state', leadsState);
+  qs.set('limit', LEADS_PAGE); qs.set('offset', leadsOffset);
+  const r = await api('/api/admin/leads/search?' + qs);
+
+  const industries = [...new Set(r.leads.map(l => l.industry).filter(Boolean))].sort();
+  const states = [...new Set(r.leads.map(l => l.state).filter(Boolean))].sort();
+
+  $('app').innerHTML = `
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Fleet Leads (${r.total.toLocaleString()} total)</h2>
+        <div style="display:flex;gap:6px">
+          <button class="green" onclick="exportLeads()">Export CSV</button>
+          <button onclick="loadCurrent()">Refresh</button>
+        </div>
+      </div>
+      <div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+        <div style="flex:1;min-width:240px">
+          <label>Search (name / phone / email / website / address)</label>
+          <input id="l-q" value="${esc(leadsQuery)}" placeholder="e.g. plumber miami">
+        </div>
+        <div style="width:200px">
+          <label>Industry</label>
+          <input id="l-industry" value="${esc(leadsIndustry)}" placeholder="Plumber">
+        </div>
+        <div style="width:100px">
+          <label>State</label>
+          <input id="l-state" value="${esc(leadsState)}" placeholder="FL">
+        </div>
+        <button class="primary" onclick="applyLeadFilters()">Apply</button>
+        <button onclick="clearLeadFilters()">Clear</button>
+      </div>
+      <div class="panel-body" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Website</th><th>City / State</th><th>Industry</th><th>Rating</th><th>Found</th></tr></thead>
+          <tbody>
+            ${r.leads.map(l => `
+              <tr class="lead-row">
+                <td>${esc(l.name||'—')}</td>
+                <td>${l.phone ? `<a href="tel:${esc(l.phone)}" style="color:var(--text)">${esc(l.phone)}</a><span class="copy-icon" onclick="copy('${esc(l.phone)}')" title="Copy">⎘</span>` : '<span class="muted">—</span>'}</td>
+                <td>${l.email ? `<a href="mailto:${esc(l.email)}" style="color:var(--cyan)">${esc(l.email)}</a>` : '<span class="muted">—</span>'}</td>
+                <td>${l.website ? `<a href="${esc(l.website)}" target="_blank" style="color:var(--purple)">${esc(l.website.replace(/^https?:\/\//,'').slice(0,40))}</a>` : '<span class="muted">—</span>'}</td>
+                <td class="muted">${esc(l.city||'')}${l.state?', '+esc(l.state):''}</td>
+                <td><span class="status done">${esc(l.industry||'—')}</span></td>
+                <td>${l.rating||'—'} ${l.reviews?`<span class="muted" style="font-size:10px">(${l.reviews})</span>`:''}</td>
+                <td class="muted" style="font-size:10px">${fmt(l.created_at)}</td>
+              </tr>
+            `).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No leads yet.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+      <div style="padding:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+        <span class="muted">Showing ${leadsOffset+1}–${Math.min(leadsOffset+r.leads.length, r.total)} of ${r.total.toLocaleString()}</span>
+        <div>
+          <button ${leadsOffset<=0?'disabled':''} onclick="leadsOffset=Math.max(0,leadsOffset-${LEADS_PAGE});loadCurrent()">← Prev</button>
+          <button ${leadsOffset+LEADS_PAGE>=r.total?'disabled':''} onclick="leadsOffset+=${LEADS_PAGE};loadCurrent()">Next →</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+function applyLeadFilters() {
+  leadsQuery = $('l-q').value.trim();
+  leadsIndustry = $('l-industry').value.trim();
+  leadsState = $('l-state').value.trim();
+  leadsOffset = 0;
+  loadCurrent();
+}
+function clearLeadFilters() {
+  leadsQuery = leadsIndustry = leadsState = ''; leadsOffset = 0; loadCurrent();
+}
+function exportLeads() {
+  const qs = new URLSearchParams();
+  if (leadsIndustry) qs.set('industry', leadsIndustry);
+  if (leadsState) qs.set('state', leadsState);
+  qs.set('token', token);
+  window.open('/api/admin/leads/export?' + qs, '_blank');
+}
+function copy(text) { navigator.clipboard.writeText(text); }
+
+// need token in query for CSV download (can't send header)
+// fall back: server also accepts ?token= via query
+(function enhanceExport(){
+  // server doesn't currently accept ?token — patch by using fetch + blob
+  window.exportLeads = async function() {
+    const qs = new URLSearchParams();
+    if (leadsIndustry) qs.set('industry', leadsIndustry);
+    if (leadsState) qs.set('state', leadsState);
+    try {
+      const res = await fetch('/api/admin/leads/export?' + qs, { headers: { 'x-admin-token': token } });
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `fleet-leads-${Date.now()}.csv`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { alert('Export failed: ' + e.message); }
+  };
+})();
+
+loadCurrent();
+setInterval(() => { if (currentView === 'fleet' || currentView === 'jobs') loadCurrent(); }, 5000);
 </script>
 </body>
 </html>

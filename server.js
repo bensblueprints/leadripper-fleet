@@ -183,6 +183,42 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
   res.json({ ok: true, saved: leads.length });
 });
 
+// Worker pushes leads scraped LOCALLY (not via fleet job) to the master DB.
+// Dedupes on (phone, industry). Accepts up to 1000 leads per call.
+app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
+  const { leads = [] } = req.body || {};
+  if (!Array.isArray(leads) || !leads.length) return res.json({ ok: true, inserted: 0, skipped: 0 });
+
+  const node = db.prepare('SELECT id FROM nodes WHERE machine_id = ?').get(req.machineId);
+  const nodeId = node?.id || null;
+
+  // Use INSERT OR IGNORE against unique (phone, industry) to dedupe across fleet
+  const ins = db.prepare(`
+    INSERT OR IGNORE INTO leads
+      (job_id, node_id, name, phone, email, website, address, city, state,
+       industry, gcid, search_term, google_category_raw, rating, reviews, created_at)
+    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const t = now();
+  let inserted = 0, skipped = 0;
+  const txn = db.transaction(() => {
+    for (const l of leads) {
+      const r = ins.run(nodeId,
+        l.name || null, l.phone || null, l.email || null, l.website || null,
+        l.address || null, l.city || null, l.state || null,
+        l.industry || null, l.gcid || null, l.search_term || l.industry || null,
+        l.google_category_raw || null, l.rating || null, l.reviews || null, t);
+      if (r.changes) inserted++; else skipped++;
+    }
+    if (inserted) {
+      db.prepare(`UPDATE nodes SET leads_harvested=leads_harvested+? WHERE id=?`).run(inserted, nodeId);
+    }
+  });
+  txn();
+  res.json({ ok: true, inserted, skipped });
+});
+
 // ==================== ADMIN / DASHBOARD ENDPOINTS ====================
 
 app.get('/api/admin/nodes', requireAdmin, (req, res) => {
@@ -221,24 +257,102 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
   res.json({ nodes, jobs, leads_total: leads.total, leads_24h: today.c });
 });
 
-// Dispatch a job. If cities is an array or "all", fans out to multiple jobs.
+// Dispatch a job. If cities is an array, fans out to multiple jobs.
 app.post('/api/admin/dispatch', requireAdmin, (req, res) => {
-  const { industry, cities = [], state, target_node_id = null, priority = 0 } = req.body || {};
+  const { industry, cities = [], state, target_node_id = null, priority = 0, max_results = 20 } = req.body || {};
   if (!industry || !cities.length) return res.status(400).json({ error: 'industry + cities required' });
 
   const ins = db.prepare(`
-    INSERT INTO jobs (industry, city, state, target_node_id, priority, status)
-    VALUES (?, ?, ?, ?, ?, 'queued')
+    INSERT INTO jobs (industry, city, state, target_node_id, priority, status, max_results)
+    VALUES (?, ?, ?, ?, ?, 'queued', ?)
   `);
   let count = 0;
   const txn = db.transaction(() => {
     for (const city of cities) {
-      ins.run(industry, city, state || null, target_node_id || null, priority);
+      // Accept "City, ST" strings too — split them
+      let c = city, s = state || null;
+      if (typeof city === 'string' && city.includes(',')) {
+        const parts = city.split(',').map(x => x.trim());
+        c = parts[0];
+        s = parts[1] || s;
+      }
+      ins.run(industry, c, s, target_node_id || null, priority, +max_results || 20);
       count++;
     }
   });
   txn();
   res.json({ ok: true, dispatched: count });
+});
+
+// Broadcast: pause / resume / kill every node
+app.post('/api/admin/broadcast/:action', requireAdmin, (req, res) => {
+  const action = req.params.action;
+  if (!['pause','resume','kill'].includes(action)) return res.status(400).json({ error: 'bad action' });
+  const nodes = db.prepare(`SELECT id FROM nodes WHERE status != 'offline'`).all();
+  const ins = db.prepare(`INSERT INTO commands (node_id, kind, payload) VALUES (?, ?, NULL)`);
+  const upd = db.prepare(`UPDATE nodes SET paused=? WHERE id=?`);
+  const txn = db.transaction(() => {
+    for (const n of nodes) {
+      ins.run(n.id, action);
+      if (action === 'pause') upd.run(1, n.id);
+      if (action === 'resume') upd.run(0, n.id);
+    }
+  });
+  txn();
+  res.json({ ok: true, affected: nodes.length });
+});
+
+// Cancel all queued jobs
+app.post('/api/admin/jobs/cancel-all', requireAdmin, (req, res) => {
+  const r = db.prepare(`UPDATE jobs SET status='cancelled', finished_at=? WHERE status='queued'`).run(now());
+  res.json({ ok: true, cancelled: r.changes });
+});
+
+// Search / filter leads
+app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
+  const { q = '', industry, gcid, state, city, limit = 500, offset = 0 } = req.query;
+  const where = [];
+  const params = [];
+  if (q) {
+    where.push(`(name LIKE ? OR phone LIKE ? OR email LIKE ? OR website LIKE ? OR address LIKE ?)`);
+    const qq = `%${q}%`;
+    params.push(qq, qq, qq, qq, qq);
+  }
+  if (industry) { where.push('industry = ?'); params.push(industry); }
+  if (gcid)     { where.push('gcid = ?');     params.push(gcid); }
+  if (state)    { where.push('state = ?');    params.push(state); }
+  if (city)     { where.push('city LIKE ?');  params.push(`%${city}%`); }
+  const sql = `SELECT * FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT ? OFFSET ?`;
+  params.push(+limit, +offset);
+  const rows = db.prepare(sql).all(...params);
+  const totalRow = db.prepare(`SELECT COUNT(*) AS c FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''}`).get(...params.slice(0, -2));
+  res.json({ leads: rows, total: totalRow.c });
+});
+
+// CSV export
+app.get('/api/admin/leads/export', requireAdmin, (req, res) => {
+  const { industry, gcid, state, limit = 100000 } = req.query;
+  const where = [];
+  const params = [];
+  if (industry) { where.push('industry = ?'); params.push(industry); }
+  if (gcid)     { where.push('gcid = ?');     params.push(gcid); }
+  if (state)    { where.push('state = ?');    params.push(state); }
+  const rows = db.prepare(`SELECT * FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT ?`).all(...params, +limit);
+  const cols = ['name','phone','email','website','address','city','state','industry','gcid','rating','reviews'];
+  const esc = v => v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
+  let csv = cols.join(',') + '\n';
+  for (const r of rows) csv += cols.map(c => esc(r[c])).join(',') + '\n';
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="fleet-leads-${Date.now()}.csv"`);
+  res.send(csv);
+});
+
+// Industry + city metadata (needed by dashboard)
+app.get('/api/meta/industries', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'industries.json'));
+});
+app.get('/api/meta/cities', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'us-cities.json'));
 });
 
 app.post('/api/admin/jobs/:id/cancel', requireAdmin, (req, res) => {

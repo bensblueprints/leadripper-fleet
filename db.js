@@ -43,6 +43,7 @@ db.exec(`
     assigned_node_id INTEGER,
     status TEXT DEFAULT 'queued',
     priority INTEGER DEFAULT 0,
+    max_results INTEGER DEFAULT 20,
     leads_found INTEGER DEFAULT 0,
     error TEXT,
     created_at INTEGER DEFAULT (strftime('%s','now')),
@@ -53,6 +54,22 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
   CREATE INDEX IF NOT EXISTS idx_jobs_assigned ON jobs(assigned_node_id);
+`);
+
+// Migration: add max_results if missing (for DBs created before v1.1)
+try {
+  const cols = db.prepare(`PRAGMA table_info(jobs)`).all().map(c => c.name);
+  if (!cols.includes('max_results')) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN max_results INTEGER DEFAULT 20`);
+  }
+} catch {}
+
+// Partial unique index for dedupe on sync-leads (tolerates legacy dupes; new inserts use OR IGNORE)
+try {
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_leads_phone_industry ON leads(phone, industry) WHERE phone IS NOT NULL AND industry IS NOT NULL`);
+} catch (e) { console.warn('[fleet] dedup index skipped:', e.message); }
+
+db.exec(`
 
   CREATE TABLE IF NOT EXISTS leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
