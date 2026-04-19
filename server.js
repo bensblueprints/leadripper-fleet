@@ -154,7 +154,7 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
 
   const t = now();
   const insertLead = db.prepare(`
-    INSERT INTO leads (job_id, node_id, name, phone, email, website, address, city, state,
+    INSERT OR IGNORE INTO leads (job_id, node_id, name, phone, email, website, address, city, state,
       industry, gcid, search_term, google_category_raw, rating, reviews, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
