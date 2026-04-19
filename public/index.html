@@ -752,7 +752,6 @@ async function renderLeads() {
         </div>
       </div>
       <div id="recat-status-bar" style="padding:8px 16px;border-top:1px solid var(--border);display:none;font-size:12px"></div>
-      <script>setTimeout(pollRecat, 200);</script>
       <div class="panel-body" style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
         <div style="flex:1;min-width:240px">
           <label>Search (name / phone / email / website / address)</label>
@@ -809,6 +808,7 @@ async function renderLeads() {
       </div>
     </div>
   `;
+  setTimeout(pollRecat, 200);
 }
 function applyLeadFilters() {
   leadsQuery = $('l-q').value.trim();
