@@ -183,6 +183,36 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
   res.json({ ok: true, saved: leads.length });
 });
 
+// Worker pushes log lines (activity stream). Accepts batch of {msg, job_id, level, t}.
+app.post('/api/fleet/log', requireWorker, (req, res) => {
+  const { lines = [] } = req.body || {};
+  const node = db.prepare('SELECT id FROM nodes WHERE machine_id = ?').get(req.machineId);
+  if (!node) return res.status(404).json({ error: 'node not registered' });
+  const ins = db.prepare(`INSERT INTO node_logs (node_id, job_id, level, msg, t) VALUES (?, ?, ?, ?, ?)`);
+  const t = now();
+  const txn = db.transaction(() => {
+    for (const ln of lines) {
+      if (!ln || !ln.msg) continue;
+      ins.run(node.id, ln.job_id || null, ln.level || 'info', String(ln.msg).slice(0, 1000), ln.t || t);
+    }
+  });
+  txn();
+  res.json({ ok: true, saved: lines.length });
+});
+
+// Admin: fetch recent logs for a node
+app.get('/api/admin/nodes/:id/logs', requireAdmin, (req, res) => {
+  const id = +req.params.id;
+  const limit = Math.min(+req.query.limit || 200, 500);
+  const since = req.query.since ? +req.query.since : 0;
+  const rows = db.prepare(`
+    SELECT id, job_id, level, msg, t FROM node_logs
+    WHERE node_id = ? AND id > ?
+    ORDER BY id DESC LIMIT ?
+  `).all(id, since, limit);
+  res.json({ logs: rows.reverse() });
+});
+
 // Worker pushes leads scraped LOCALLY (not via fleet job) to the master DB.
 // Dedupes on (phone, industry). Accepts up to 1000 leads per call.
 app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {

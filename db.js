@@ -105,7 +105,31 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now'))
   );
   CREATE INDEX IF NOT EXISTS idx_commands_node ON commands(node_id, delivered);
+
+  CREATE TABLE IF NOT EXISTS node_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id INTEGER NOT NULL,
+    job_id INTEGER,
+    level TEXT DEFAULT 'info',
+    msg TEXT,
+    t INTEGER DEFAULT (strftime('%s','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_node_logs_node_id ON node_logs(node_id, id DESC);
 `);
+
+// Keep last 500 log lines per node
+setInterval(() => {
+  try {
+    db.exec(`
+      DELETE FROM node_logs WHERE id IN (
+        SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY id DESC) AS rn
+          FROM node_logs
+        ) WHERE rn > 500
+      )
+    `);
+  } catch {}
+}, 60000);
 
 // Sweep stale nodes on startup — any node not seen in 90s is offline
 const stmtMarkOffline = db.prepare(`

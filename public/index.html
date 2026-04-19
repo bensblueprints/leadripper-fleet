@@ -145,6 +145,32 @@
   .lead-row td { font-size: 11px; }
   .copy-icon { cursor: pointer; color: var(--muted); margin-left: 4px; font-size: 10px; }
   .copy-icon:hover { color: var(--cyan); }
+
+  /* Log modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+    z-index: 200; display: flex; align-items: center; justify-content: center;
+  }
+  .modal {
+    background: var(--panel); border: 1px solid var(--cyan);
+    border-radius: 6px; width: 90%; max-width: 1000px; height: 80vh;
+    display: flex; flex-direction: column; box-shadow: 0 0 40px rgba(0,229,255,0.2);
+  }
+  .modal-header {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .modal-header h2 { margin: 0; font-size: 13px; letter-spacing: 2px; color: var(--cyan); }
+  .modal-body {
+    flex: 1; overflow-y: auto; padding: 14px 16px;
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.5;
+    background: #060a0f;
+  }
+  .log-line { padding: 2px 0; white-space: pre-wrap; word-break: break-all; }
+  .log-line .ts { color: var(--muted); margin-right: 10px; font-size: 10px; }
+  .log-line .job { color: var(--purple); margin-right: 8px; font-size: 10px; }
+  .log-line.error { color: var(--red); }
+  .log-line.warn { color: var(--amber); }
 </style>
 </head>
 <body>
@@ -262,6 +288,7 @@ async function renderFleet() {
                 <td>${(n.leads_harvested||0).toLocaleString()}<br><span class="muted" style="font-size:10px">${n.jobs_done||0} jobs</span></td>
                 <td class="muted">${fmt(n.last_seen)}</td>
                 <td style="white-space:nowrap">
+                  <button onclick="openNodeLogs(${n.id}, '${esc(n.label||n.hostname||'#'+n.id)}')">Logs</button>
                   <button onclick="editNode(${n.id}, '${esc(n.label||'')}', ${n.cpu_cap}, ${n.ram_cap})">Edit</button>
                   ${n.status==='paused'
                     ? `<button onclick="nodeAction(${n.id},'resume')">Resume</button>`
@@ -288,6 +315,66 @@ async function nodeAction(id, action) {
   await api(`/api/admin/nodes/${id}/${action}`, { method: 'POST' });
   loadCurrent();
 }
+// ==== Node logs modal ====
+let logModalNodeId = null, logModalSince = 0, logModalTimer = null, logModalLabel = '';
+async function openNodeLogs(nodeId, label) {
+  logModalNodeId = nodeId; logModalSince = 0; logModalLabel = label;
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.id = 'log-modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h2>LIVE LOGS // ${esc(label)}</h2>
+        <div>
+          <button onclick="clearLogView()">Clear</button>
+          <button onclick="closeNodeLogs()">Close</button>
+        </div>
+      </div>
+      <div class="modal-body" id="log-modal-body">
+        <div style="color:var(--muted)">Fetching logs…</div>
+      </div>
+    </div>
+  `;
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeNodeLogs(); });
+  document.body.appendChild(backdrop);
+  await pollNodeLogs();
+  logModalTimer = setInterval(pollNodeLogs, 2000);
+}
+function clearLogView() {
+  const body = document.getElementById('log-modal-body');
+  if (body) body.innerHTML = '';
+}
+async function pollNodeLogs() {
+  if (!logModalNodeId) return;
+  try {
+    const r = await api(`/api/admin/nodes/${logModalNodeId}/logs?since=${logModalSince}&limit=200`);
+    const body = document.getElementById('log-modal-body');
+    if (!body) return;
+    if (logModalSince === 0 && !r.logs.length) {
+      body.innerHTML = '<div style="color:var(--muted)">No logs yet for this node. If Fleet Mode is enabled, worker output will appear here within ~5s.</div>';
+      return;
+    }
+    if (!r.logs.length) return;
+    logModalSince = Math.max(...r.logs.map(l => l.id));
+    const wasAtBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    for (const l of r.logs) {
+      const d = document.createElement('div');
+      d.className = 'log-line ' + (l.level || 'info');
+      const ts = new Date(l.t * 1000).toLocaleTimeString();
+      d.innerHTML = `<span class="ts">${ts}</span>${l.job_id ? `<span class="job">[job#${l.job_id}]</span>` : ''}${esc(l.msg)}`;
+      body.appendChild(d);
+    }
+    if (wasAtBottom) body.scrollTop = body.scrollHeight;
+  } catch (e) { console.error(e); }
+}
+function closeNodeLogs() {
+  if (logModalTimer) clearInterval(logModalTimer);
+  logModalTimer = null; logModalNodeId = null; logModalSince = 0;
+  const b = document.getElementById('log-modal-backdrop');
+  if (b) b.remove();
+}
+
 async function editNode(id, label, cpuCap, ramCap) {
   const newLabel = prompt('Label:', label);
   if (newLabel === null) return;
