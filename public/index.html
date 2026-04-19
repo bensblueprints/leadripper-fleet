@@ -484,10 +484,23 @@ function initIndustryPicker() {
     return 0;
   }
   function show(q) {
-    q = q.trim().toLowerCase();
-    if (!q) { dropdown.hidden = true; matches = []; return; }
+    q = (q || '').trim().toLowerCase();
+    if (!q) {
+      // Empty query → scrollable alphabetical list of ALL industries
+      matches = [...INDUSTRIES].sort((a, b) => a.name.localeCompare(b.name));
+      dropdown.innerHTML = matches.map((m, idx) => `
+        <div class="picker-item ${idx===active?'active':''}" onclick="pickIndustry('${esc(m.name)}','${esc(m.gcid)}')">
+          ${esc(m.name)}
+          <span class="gcid">${esc(m.gcid)}</span>
+        </div>
+      `).join('');
+      dropdown.style.maxHeight = '320px';
+      dropdown.style.overflowY = 'auto';
+      dropdown.hidden = false;
+      return;
+    }
     matches = INDUSTRIES.map(i => ({i, s: score(i, q)}))
-      .filter(x => x.s > 0).sort((a,b)=>b.s-a.s).slice(0,30).map(x=>x.i);
+      .filter(x => x.s > 0).sort((a,b)=>b.s-a.s).slice(0,60).map(x=>x.i);
     if (!matches.length) { dropdown.hidden = true; return; }
     dropdown.innerHTML = matches.map((m, idx) => `
       <div class="picker-item ${idx===active?'active':''}" onclick="pickIndustry('${esc(m.name)}','${esc(m.gcid)}')">
@@ -495,10 +508,12 @@ function initIndustryPicker() {
         <span class="gcid">${esc(m.gcid)}</span>
       </div>
     `).join('');
+    dropdown.style.maxHeight = '320px';
+    dropdown.style.overflowY = 'auto';
     dropdown.hidden = false;
   }
   input.addEventListener('input', () => { active = -1; show(input.value); });
-  input.addEventListener('focus', () => input.value && show(input.value));
+  input.addEventListener('focus', () => show(input.value));
   input.addEventListener('blur', () => setTimeout(() => dropdown.hidden = true, 200));
   input.addEventListener('keydown', e => {
     if (e.key==='ArrowDown') { active = Math.min(active+1, matches.length-1); show(input.value); e.preventDefault(); }
@@ -570,6 +585,7 @@ async function renderJobs() {
             <option value="cancelled" ${jobsFilter==='cancelled'?'selected':''}>Cancelled</option>
           </select>
           <button class="danger" onclick="cancelAllQueued()">Cancel All Queued</button>
+          <button onclick="clearFinishedJobs()">Clear Finished</button>
           <button onclick="loadCurrent()">Refresh</button>
         </div>
       </div>
@@ -602,10 +618,16 @@ async function cancelJob(id) {
   await api(`/api/admin/jobs/${id}/cancel`, { method: 'POST' });
   loadCurrent();
 }
+async function clearFinishedJobs() {
+  if (!confirm('Delete all done / failed / cancelled jobs?')) return;
+  const r = await api('/api/admin/jobs/clear-finished', { method: 'POST' });
+  alert(`Deleted ${r.deleted} job(s).`);
+  loadCurrent();
+}
 async function cancelAllQueued() {
-  if (!confirm('Cancel every queued job?')) return;
+  if (!confirm('Delete every queued job?')) return;
   const r = await api('/api/admin/jobs/cancel-all', { method: 'POST' });
-  alert(`Cancelled ${r.cancelled} job(s).`);
+  alert(`Deleted ${r.cancelled} job(s).`);
   loadCurrent();
 }
 
@@ -652,20 +674,29 @@ async function renderLeads() {
       </div>
       <div class="panel-body" style="padding:0;overflow-x:auto;">
         <table>
-          <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Website</th><th>City / State</th><th>Industry</th><th>Rating</th><th>Found</th></tr></thead>
+          <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Website</th><th>Platform</th><th>Status</th><th>Tags</th><th>City / State</th><th>Industry</th><th>Rating</th><th>Found</th></tr></thead>
           <tbody>
-            ${r.leads.map(l => `
+            ${r.leads.map(l => {
+              let tags = [];
+              try { tags = JSON.parse(l.tags || '[]'); } catch {}
+              const tagHtml = tags.slice(0,4).map(t => `<span class="status" style="background:rgba(138,92,246,.15);color:#c4a9ff;margin-right:2px">${esc(t)}</span>`).join('') + (tags.length > 4 ? `<span class="muted">+${tags.length-4}</span>` : '');
+              const status = l.website_status || 'unchecked';
+              const statusColor = status === 'live' ? '#3eff9a' : status === 'broken' || status === 'hacked' ? '#ff5577' : status === 'no-website' ? '#7a8796' : '#ffb347';
+              return `
               <tr class="lead-row">
                 <td>${esc(l.name||'—')}</td>
                 <td>${l.phone ? `<a href="tel:${esc(l.phone)}" style="color:var(--text)">${esc(l.phone)}</a><span class="copy-icon" onclick="copy('${esc(l.phone)}')" title="Copy">⎘</span>` : '<span class="muted">—</span>'}</td>
                 <td>${l.email ? `<a href="mailto:${esc(l.email)}" style="color:var(--cyan)">${esc(l.email)}</a>` : '<span class="muted">—</span>'}</td>
                 <td>${l.website ? `<a href="${esc(l.website)}" target="_blank" style="color:var(--purple)">${esc(l.website.replace(/^https?:\/\//,'').slice(0,40))}</a>` : '<span class="muted">—</span>'}</td>
+                <td>${l.website_platform ? `<span class="status" style="background:rgba(0,220,255,.12);color:#6fdfff">${esc(l.website_platform)}</span>` : '<span class="muted">—</span>'}</td>
+                <td><span class="status" style="background:rgba(255,255,255,.05);color:${statusColor}">${esc(status)}</span></td>
+                <td>${tagHtml || '<span class="muted">—</span>'}</td>
                 <td class="muted">${esc(l.city||'')}${l.state?', '+esc(l.state):''}</td>
                 <td><span class="status done">${esc(l.industry||'—')}</span></td>
                 <td>${l.rating||'—'} ${l.reviews?`<span class="muted" style="font-size:10px">(${l.reviews})</span>`:''}</td>
                 <td class="muted" style="font-size:10px">${fmt(l.created_at)}</td>
-              </tr>
-            `).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No leads yet.</td></tr>'}
+              </tr>`;
+            }).join('') || '<tr><td colspan="11" class="muted" style="text-align:center;padding:24px">No leads yet.</td></tr>'}
           </tbody>
         </table>
       </div>

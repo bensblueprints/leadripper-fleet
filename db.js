@@ -64,6 +64,14 @@ try {
   }
 } catch {}
 
+// Migration: enrichment columns on leads
+try {
+  const lcols = db.prepare(`PRAGMA table_info(leads)`).all().map(c => c.name);
+  if (!lcols.includes('website_platform')) db.exec(`ALTER TABLE leads ADD COLUMN website_platform TEXT`);
+  if (!lcols.includes('website_status')) db.exec(`ALTER TABLE leads ADD COLUMN website_status TEXT DEFAULT 'unchecked'`);
+  if (!lcols.includes('tags')) db.exec(`ALTER TABLE leads ADD COLUMN tags TEXT DEFAULT '[]'`);
+} catch {}
+
 // Partial unique index for dedupe on sync-leads (tolerates legacy dupes; new inserts use OR IGNORE)
 try {
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_leads_phone_industry ON leads(phone, industry) WHERE phone IS NOT NULL AND industry IS NOT NULL`);
@@ -88,6 +96,9 @@ db.exec(`
     google_category_raw TEXT,
     rating REAL,
     reviews INTEGER,
+    website_platform TEXT,
+    website_status TEXT DEFAULT 'unchecked',
+    tags TEXT DEFAULT '[]',
     created_at INTEGER DEFAULT (strftime('%s','now')),
     synced_at INTEGER
   );

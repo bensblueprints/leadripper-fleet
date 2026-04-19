@@ -155,17 +155,20 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
   const t = now();
   const insertLead = db.prepare(`
     INSERT OR IGNORE INTO leads (job_id, node_id, name, phone, email, website, address, city, state,
-      industry, gcid, search_term, google_category_raw, rating, reviews, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      industry, gcid, search_term, google_category_raw, rating, reviews,
+      website_platform, website_status, tags, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const txn = db.transaction(() => {
     for (const l of leads) {
+      const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' ? l.tags : '[]');
       insertLead.run(job.id, node.id,
         l.name || null, l.phone || null, l.email || null, l.website || null,
         l.address || null, l.city || job.city, l.state || job.state,
         l.industry || null, l.gcid || null, l.search_term || job.industry,
-        l.google_category_raw || null, l.rating || null, l.reviews || null, t);
+        l.google_category_raw || null, l.rating || null, l.reviews || null,
+        l.website_platform || null, l.website_status || 'unchecked', tagsJson, t);
     }
     db.prepare(`
       UPDATE jobs SET status=?, finished_at=?, leads_found=?, error=? WHERE id=?
@@ -226,19 +229,22 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
   const ins = db.prepare(`
     INSERT OR IGNORE INTO leads
       (job_id, node_id, name, phone, email, website, address, city, state,
-       industry, gcid, search_term, google_category_raw, rating, reviews, created_at)
-    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       industry, gcid, search_term, google_category_raw, rating, reviews,
+       website_platform, website_status, tags, created_at)
+    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const t = now();
   let inserted = 0, skipped = 0;
   const txn = db.transaction(() => {
     for (const l of leads) {
+      const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' ? l.tags : '[]');
       const r = ins.run(nodeId,
         l.name || null, l.phone || null, l.email || null, l.website || null,
         l.address || null, l.city || null, l.state || null,
         l.industry || null, l.gcid || null, l.search_term || l.industry || null,
-        l.google_category_raw || null, l.rating || null, l.reviews || null, t);
+        l.google_category_raw || null, l.rating || null, l.reviews || null,
+        l.website_platform || null, l.website_status || 'unchecked', tagsJson, t);
       if (r.changes) inserted++; else skipped++;
     }
     if (inserted) {
@@ -332,10 +338,16 @@ app.post('/api/admin/broadcast/:action', requireAdmin, (req, res) => {
   res.json({ ok: true, affected: nodes.length });
 });
 
-// Cancel all queued jobs
+// Cancel all queued jobs (deletes them)
 app.post('/api/admin/jobs/cancel-all', requireAdmin, (req, res) => {
-  const r = db.prepare(`UPDATE jobs SET status='cancelled', finished_at=? WHERE status='queued'`).run(now());
+  const r = db.prepare(`DELETE FROM jobs WHERE status='queued'`).run();
   res.json({ ok: true, cancelled: r.changes });
+});
+
+// Clear finished jobs (done/failed/cancelled) — housekeeping
+app.post('/api/admin/jobs/clear-finished', requireAdmin, (req, res) => {
+  const r = db.prepare(`DELETE FROM jobs WHERE status IN ('done','failed','cancelled')`).run();
+  res.json({ ok: true, deleted: r.changes });
 });
 
 // Search / filter leads
@@ -368,7 +380,7 @@ app.get('/api/admin/leads/export', requireAdmin, (req, res) => {
   if (gcid)     { where.push('gcid = ?');     params.push(gcid); }
   if (state)    { where.push('state = ?');    params.push(state); }
   const rows = db.prepare(`SELECT * FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT ?`).all(...params, +limit);
-  const cols = ['name','phone','email','website','address','city','state','industry','gcid','rating','reviews'];
+  const cols = ['name','phone','email','website','address','city','state','industry','gcid','rating','reviews','website_platform','website_status','tags'];
   const esc = v => v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
   let csv = cols.join(',') + '\n';
   for (const r of rows) csv += cols.map(c => esc(r[c])).join(',') + '\n';
@@ -383,13 +395,15 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
   if (!Array.isArray(leads) || !leads.length) return res.status(400).json({ error: 'leads[] required' });
   const ins = db.prepare(`
     INSERT OR IGNORE INTO leads (name, phone, email, website, address, city, state,
-      industry, gcid, search_term, google_category_raw, rating, reviews, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      industry, gcid, search_term, google_category_raw, rating, reviews,
+      website_platform, website_status, tags, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const t = now();
   let inserted = 0, skipped = 0;
   const txn = db.transaction(() => {
     for (const l of leads) {
+      const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' && l.tags.trim().startsWith('[') ? l.tags : '[]');
       const r = ins.run(
         l.name || l.business_name || null,
         l.phone || null, l.email || null, l.website || null,
@@ -399,6 +413,9 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
         l.google_category_raw || null,
         l.rating == null || l.rating === '' ? null : +l.rating,
         l.reviews == null || l.reviews === '' ? null : +l.reviews,
+        l.website_platform || null,
+        l.website_status || 'unchecked',
+        tagsJson,
         t
       );
       if (r.changes) inserted++; else skipped++;
@@ -423,9 +440,11 @@ app.post('/api/admin/jobs/:id/cancel', requireAdmin, (req, res) => {
   if (job.status === 'running' && job.assigned_node_id) {
     db.prepare(`INSERT INTO commands (node_id, kind, payload) VALUES (?, 'cancel_job', ?)`)
       .run(job.assigned_node_id, JSON.stringify({ job_id: id }));
+    // Free the node so it can pick up new work
+    db.prepare(`UPDATE nodes SET current_job_id=NULL, status='idle' WHERE id=?`).run(job.assigned_node_id);
   }
-  db.prepare(`UPDATE jobs SET status='cancelled', finished_at=? WHERE id=?`).run(now(), id);
-  res.json({ ok: true });
+  db.prepare(`DELETE FROM jobs WHERE id=?`).run(id);
+  res.json({ ok: true, deleted: 1 });
 });
 
 app.post('/api/admin/nodes/:id/pause', requireAdmin, (req, res) => {
