@@ -519,6 +519,28 @@ app.patch('/api/admin/nodes/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+// Live activity: group recent leads (last N minutes) by node + industry + city
+// so we can show what each worker is currently scraping (for local scrapes that
+// don't go through the fleet-job dispatcher).
+app.get('/api/admin/activity', requireAdmin, (req, res) => {
+  const windowSec = Math.min(+req.query.window || 180, 3600); // default 3 min
+  const cutoff = now() - windowSec;
+  const rows = db.prepare(`
+    SELECT l.node_id, l.industry, l.city, l.state,
+           COUNT(*) AS leads_count,
+           MIN(l.created_at) AS first_at,
+           MAX(l.created_at) AS last_at,
+           n.label AS node_label, n.hostname AS node_hostname, n.status AS node_status
+    FROM leads l
+    LEFT JOIN nodes n ON n.id = l.node_id
+    WHERE l.created_at >= ? AND l.job_id IS NULL
+    GROUP BY l.node_id, l.industry, l.city
+    ORDER BY last_at DESC
+    LIMIT 50
+  `).all(cutoff);
+  res.json({ activity: rows, window_seconds: windowSec });
+});
+
 app.get('/api/admin/leads', requireAdmin, (req, res) => {
   const { limit = 500, job_id } = req.query;
   const rows = job_id

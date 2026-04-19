@@ -301,7 +301,7 @@ async function loadCurrent() {
 
 // ============== FLEET VIEW ==============
 async function renderFleet() {
-  const [stats, nodes] = await Promise.all([api('/api/admin/stats'), api('/api/admin/nodes')]);
+  const [stats, nodes, activity] = await Promise.all([api('/api/admin/stats'), api('/api/admin/nodes'), api('/api/admin/activity?window=180').catch(()=>({activity:[]}))]);
   $('app').innerHTML = `
     <div class="stats">
       <div class="stat"><div class="label">Nodes Online</div><div class="value">${(stats.nodes.working||0)+(stats.nodes.idle||0)+(stats.nodes.paused||0)} <span class="muted" style="font-size:12px">/ ${stats.nodes.total||0}</span></div></div>
@@ -348,6 +348,34 @@ async function renderFleet() {
                 </td>
               </tr>
             `).join('') || '<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">No nodes yet. Enable Fleet Mode in a licensed desktop.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <h2>Live Local Activity <span class="muted" style="font-size:12px;font-weight:normal">— scrapes running inside the LeadRipper app (not fleet-dispatched)</span></h2>
+        <span class="muted" style="font-size:11px">last 3 min</span>
+      </div>
+      <div class="panel-body" style="padding:0;overflow-x:auto;">
+        <table>
+          <thead><tr><th>Node</th><th>Industry</th><th>City</th><th>Leads (3m)</th><th>Started</th><th>Last Lead</th></tr></thead>
+          <tbody>
+            ${activity.activity.map(a => {
+              const ago = Math.max(0, Math.floor((Date.now()/1000) - a.last_at));
+              const isHot = ago < 30;
+              return `<tr${isHot ? ' style="background:rgba(0,191,160,.06)"' : ''}>
+                <td>
+                  <span class="dot ${isHot?'working':'online'}"></span>
+                  ${esc(a.node_label || a.node_hostname || '#'+a.node_id)}
+                </td>
+                <td><span class="status done">${esc(a.industry||'—')}</span></td>
+                <td>${esc(a.city||'—')}${a.state?', '+esc(a.state):''}</td>
+                <td><strong>${a.leads_count}</strong></td>
+                <td class="muted" style="font-size:10px">${fmt(a.first_at)}</td>
+                <td class="muted" style="font-size:10px">${ago}s ago</td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No local activity in the last 3 minutes.</td></tr>'}
           </tbody>
         </table>
       </div>
