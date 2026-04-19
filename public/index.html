@@ -184,6 +184,7 @@
   <div class="tab" data-view="dispatch" onclick="showView('dispatch')">Dispatch</div>
   <div class="tab" data-view="jobs" onclick="showView('jobs')">Jobs</div>
   <div class="tab" data-view="leads" onclick="showView('leads')">Leads</div>
+  <div class="tab" data-view="import" onclick="showView('import')">Import</div>
 </div>
 
 <main>
@@ -294,6 +295,7 @@ async function loadCurrent() {
     else if (currentView === 'dispatch') await renderDispatch();
     else if (currentView === 'jobs') await renderJobs();
     else if (currentView === 'leads') await renderLeads();
+    else if (currentView === 'import') await renderImport();
   } catch (e) {
     $('app').innerHTML = `<div class="unauth">Error: ${e.message}. Check token.</div>`;
   }
@@ -881,6 +883,143 @@ async function importLeads(ev) {
     alert(`Imported ${d.inserted} new (${d.skipped} dup) from ${d.total} rows`);
     loadCurrent();
   } catch (e) { alert('Import failed: ' + e.message); }
+}
+
+// ============== IMPORT VIEW ==============
+// Target columns the server accepts (via /api/admin/leads/import + normalizer)
+const IMPORT_TARGETS = [
+  'name','phone','email','website','address','city','state','industry',
+  'gcid','rating','reviews','website_platform','website_status','tags','business_hours',
+  'reviews_1star','reviews_2star','reviews_3star','reviews_4star','reviews_5star',
+  'ai_seo_score','ai_design_score','ai_seo_notes','ai_design_notes','ai_provider'
+];
+// Fuzzy matcher for old/different column names → current targets
+function autoMapHeader(h) {
+  const s = String(h||'').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g,'');
+  const map = {
+    business_name:'name', biz:'name', company:'name', company_name:'name', title:'name',
+    phone_number:'phone', tel:'phone', telephone:'phone', mobile:'phone',
+    email_address:'email', mail:'email',
+    site:'website', url:'website', domain:'website',
+    street:'address', street_address:'address', location:'address', full_address:'address',
+    town:'city', locality:'city',
+    region:'state', province:'state',
+    category:'industry', niche:'industry', vertical:'industry', trade:'industry',
+    google_category:'industry', google_category_raw:'industry',
+    stars:'rating', avg_rating:'rating', score:'rating',
+    review_count:'reviews', reviews_count:'reviews', total_reviews:'reviews', num_reviews:'reviews',
+    platform:'website_platform', cms:'website_platform',
+    site_status:'website_status', status:'website_status',
+    hours:'business_hours', open_hours:'business_hours', opening_hours:'business_hours',
+    one_star:'reviews_1star', two_star:'reviews_2star', three_star:'reviews_3star', four_star:'reviews_4star', five_star:'reviews_5star',
+    seo_score:'ai_seo_score', design_score:'ai_design_score'
+  };
+  if (IMPORT_TARGETS.includes(s)) return s;
+  return map[s] || '';
+}
+let importData = { headers: [], rows: [], mapping: {}, filename: '' };
+async function renderImport() {
+  $('app').innerHTML = `
+    <div class="panel">
+      <div class="panel-header"><h2>Import Leads into Master</h2></div>
+      <div class="panel-body">
+        <p class="muted" style="margin:0 0 14px">
+          Upload a CSV or JSON export (any version — v2, v3, v4, v5, v6). Headers don't have to match —
+          we auto-detect common aliases (<code>business_name → name</code>, <code>stars → rating</code>, etc.)
+          and let you remap anything that isn't recognized. Dedupe is on <code>(phone, industry)</code>,
+          so re-importing the same file is safe.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input type="file" id="imp-file" accept=".csv,.json,.tsv,.txt" onchange="onImportFile(event)" />
+          <span class="muted" id="imp-status">${importData.filename ? `Loaded ${importData.rows.length.toLocaleString()} rows from ${esc(importData.filename)}` : 'No file loaded'}</span>
+        </div>
+        ${importData.headers.length ? renderImportMapping() : ''}
+      </div>
+    </div>
+  `;
+}
+function renderImportMapping() {
+  const previewRows = importData.rows.slice(0, 5);
+  return `
+    <hr style="border:none;border-top:1px solid var(--border);margin:20px 0" />
+    <h3 style="margin:0 0 10px">Column Mapping</h3>
+    <p class="muted" style="margin:0 0 10px">Map each column in your file to a master-DB column. Set to <code>— ignore —</code> to skip.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:6px 14px;font-size:12px;margin-bottom:18px">
+      <div style="font-weight:700;color:#00bfa0">Your Column</div>
+      <div style="font-weight:700;color:#00bfa0">Maps To</div>
+      <div style="font-weight:700;color:#00bfa0">Sample Values</div>
+      ${importData.headers.map((h,i) => {
+        const samples = previewRows.map(r => r[h]).filter(v => v != null && v !== '').slice(0,3).map(esc).join(' · ');
+        const opts = ['<option value="">— ignore —</option>']
+          .concat(IMPORT_TARGETS.map(t => `<option value="${t}" ${importData.mapping[h]===t?'selected':''}>${t}</option>`))
+          .join('');
+        return `
+          <div><code>${esc(h)}</code></div>
+          <div><select onchange="importData.mapping[${JSON.stringify(h)}]=this.value" style="width:100%">${opts}</select></div>
+          <div class="muted" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${samples || '—'}</div>
+        `;
+      }).join('')}
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="primary" onclick="runImport()" style="padding:10px 20px">Import ${importData.rows.length.toLocaleString()} leads</button>
+      <button onclick="importData={headers:[],rows:[],mapping:{},filename:''};loadCurrent()">Reset</button>
+      <span class="muted" id="imp-result"></span>
+    </div>
+  `;
+}
+async function onImportFile(ev) {
+  const file = ev.target.files?.[0];
+  ev.target.value = '';
+  if (!file) return;
+  const text = await file.text();
+  let rows;
+  try {
+    if (file.name.toLowerCase().endsWith('.json')) {
+      const p = JSON.parse(text);
+      rows = Array.isArray(p) ? p : (p.leads || []);
+    } else {
+      rows = parseCSV(text);
+    }
+  } catch (e) { alert('Parse failed: ' + e.message); return; }
+  if (!rows.length) { alert('No rows found'); return; }
+  const headers = Object.keys(rows[0]);
+  const mapping = {};
+  headers.forEach(h => { mapping[h] = autoMapHeader(h); });
+  importData = { headers, rows, mapping, filename: file.name };
+  loadCurrent();
+}
+async function runImport() {
+  // Apply mapping: rename keys from source → target
+  const leads = importData.rows.map(src => {
+    const out = {};
+    for (const [from, to] of Object.entries(importData.mapping)) {
+      if (!to) continue;
+      if (src[from] != null && src[from] !== '') out[to] = src[from];
+    }
+    return out;
+  }).filter(l => l.name || l.phone || l.website); // need at least one identifier
+  if (!leads.length) { alert('After mapping, no rows have a name/phone/website. Check your column mapping.'); return; }
+  $('imp-result').textContent = `Uploading ${leads.length.toLocaleString()}...`;
+  try {
+    // Chunk large imports so we don't blow request size limits
+    const CHUNK = 2000;
+    let inserted = 0, skipped = 0, total = 0;
+    for (let i = 0; i < leads.length; i += CHUNK) {
+      const chunk = leads.slice(i, i + CHUNK);
+      const r = await fetch('/api/admin/leads/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-admin-token': token },
+        body: JSON.stringify({ leads: chunk })
+      });
+      if (!r.ok) { const e = await r.json().catch(()=>({})); throw new Error(e.error || 'HTTP ' + r.status); }
+      const d = await r.json();
+      inserted += d.inserted; skipped += d.skipped; total += d.total;
+      $('imp-result').textContent = `${Math.min(i+CHUNK, leads.length).toLocaleString()} / ${leads.length.toLocaleString()} · ${inserted.toLocaleString()} new, ${skipped.toLocaleString()} dup`;
+    }
+    alert(`✓ Imported ${inserted.toLocaleString()} new leads (${skipped.toLocaleString()} duplicates skipped) from ${total.toLocaleString()} rows.`);
+    importData = { headers: [], rows: [], mapping: {}, filename: '' };
+    loadCurrent();
+  } catch (e) { alert('Import failed: ' + e.message); $('imp-result').textContent = 'Failed.'; }
 }
 
 // need token in query for CSV download (can't send header)
