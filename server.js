@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const db = require('./db');
 const massSeed = require('./mass-scrape/seed');
 const massScheduler = require('./mass-scrape/scheduler');
+const ghlSync = require('./ghl-sync');
 
 const app = express();
 app.use(cors());
@@ -409,7 +410,7 @@ app.post('/api/admin/jobs/clear-finished', requireAdmin, (req, res) => {
 
 // Search / filter leads
 app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
-  const { q = '', industry, gcid, state, city, limit = 500, offset = 0 } = req.query;
+  const { q = '', industry, gcid, state, city, ghlSynced, hasPhone, limit = 500, offset = 0 } = req.query;
   const where = [];
   const params = [];
   if (q) {
@@ -421,6 +422,9 @@ app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
   if (gcid)     { where.push('gcid = ?');     params.push(gcid); }
   if (state)    { where.push('state = ?');    params.push(state); }
   if (city)     { where.push('city LIKE ?');  params.push(`%${city}%`); }
+  if (ghlSynced === 'true')  where.push(`ghl_synced = 1`);
+  if (ghlSynced === 'false') where.push(`(ghl_synced IS NULL OR ghl_synced = 0)`);
+  if (hasPhone === 'true')   where.push(`phone IS NOT NULL AND phone != ''`);
   const sql = `SELECT * FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT ? OFFSET ?`;
   params.push(+limit, +offset);
   const rows = db.prepare(sql).all(...params);
@@ -742,6 +746,53 @@ try {
   const r = massSeed.ensureSeeded(db, { logger: (m) => console.log(m) });
   if (r.inserted > 0) console.log(`[mass-scrape boot] seeded ${r.inserted} rows`);
 } catch (e) { console.error('[mass-scrape boot] seed error:', e.message); }
+
+// ==================== GHL SYNC ====================
+
+app.get('/api/admin/ghl/config', requireAdmin, (req, res) => {
+  const c = ghlSync.getCreds(db);
+  res.json({
+    hasKey: !!c.apiKey,
+    locationId: c.locationId,
+    keyMask: c.apiKey ? (c.apiKey.slice(0, 6) + '…' + c.apiKey.slice(-4)) : '',
+  });
+});
+
+app.post('/api/admin/ghl/config', requireAdmin, (req, res) => {
+  const { apiKey, locationId } = req.body || {};
+  ghlSync.saveCreds(db, { apiKey, locationId });
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/ghl/status', requireAdmin, (req, res) => {
+  res.json({ status: ghlSync.status(), stats: ghlSync.stats(db) });
+});
+
+app.post('/api/admin/ghl/sync', requireAdmin, async (req, res) => {
+  try {
+    const { leadIds, filter, onlyUnsynced = true, trigger } = req.body || {};
+    const r = await ghlSync.runSync(db, {
+      leadIds: Array.isArray(leadIds) ? leadIds.map(Number).filter(Boolean) : null,
+      filter: filter || null,
+      onlyUnsynced: !!onlyUnsynced,
+      trigger: trigger || 'manual',
+    });
+    res.json(r);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/ghl/cancel', requireAdmin, (req, res) => {
+  ghlSync.cancel();
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/ghl/reset-sync', requireAdmin, (req, res) => {
+  const ids = Array.isArray(req.body?.leadIds) ? req.body.leadIds.map(Number).filter(Boolean) : [];
+  const changed = ghlSync.bulkResetSync(db, ids);
+  res.json({ ok: true, changed });
+});
 
 // ==================== UPDATES (self-hosted releases) ====================
 // Release binaries + latest.json live in /data/releases (Docker volume on Contabo).

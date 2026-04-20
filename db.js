@@ -97,6 +97,10 @@ try {
   if (!lcols.includes('ai_design_notes')) db.exec(`ALTER TABLE leads ADD COLUMN ai_design_notes TEXT`);
   if (!lcols.includes('ai_analyzed_at')) db.exec(`ALTER TABLE leads ADD COLUMN ai_analyzed_at INTEGER`);
   if (!lcols.includes('ai_provider')) db.exec(`ALTER TABLE leads ADD COLUMN ai_provider TEXT`);
+  if (!lcols.includes('ghl_synced')) db.exec(`ALTER TABLE leads ADD COLUMN ghl_synced INTEGER DEFAULT 0`);
+  if (!lcols.includes('ghl_contact_id')) db.exec(`ALTER TABLE leads ADD COLUMN ghl_contact_id TEXT`);
+  if (!lcols.includes('ghl_synced_at')) db.exec(`ALTER TABLE leads ADD COLUMN ghl_synced_at INTEGER`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_leads_ghl_synced ON leads(ghl_synced)`);
 } catch {}
 
 // Partial unique index for dedupe on sync-leads (tolerates legacy dupes; new inserts use OR IGNORE)

@@ -185,6 +185,7 @@
   <div class="tab" data-view="jobs" onclick="showView('jobs')">Jobs</div>
   <div class="tab" data-view="masscrape" onclick="showView('masscrape')">Mass Scrape</div>
   <div class="tab" data-view="leads" onclick="showView('leads')">Leads</div>
+  <div class="tab" data-view="ghl" onclick="showView('ghl')">GHL Sync</div>
   <div class="tab" data-view="import" onclick="showView('import')">Import</div>
 </div>
 
@@ -285,6 +286,7 @@ function renderLeadDetail(l) {
 
 function showView(v) {
   currentView = v;
+  if (v !== 'ghl' && typeof stopGhlPoll === 'function') stopGhlPoll();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
   loadCurrent();
 }
@@ -297,6 +299,7 @@ async function loadCurrent() {
     else if (currentView === 'jobs') await renderJobs();
     else if (currentView === 'masscrape') await renderMassScrape();
     else if (currentView === 'leads') await renderLeads();
+    else if (currentView === 'ghl') await renderGhl();
     else if (currentView === 'import') await renderImport();
   } catch (e) {
     $('app').innerHTML = `<div class="unauth">Error: ${e.message}. Check token.</div>`;
@@ -1097,6 +1100,138 @@ function autoMapHeader(h) {
   if (IMPORT_TARGETS.includes(s)) return s;
   return map[s] || '';
 }
+// ============== GHL SYNC VIEW ==============
+let ghlPollTimer = null;
+async function renderGhl() {
+  stopGhlPoll();
+  const [cfg, st] = await Promise.all([
+    api('/api/admin/ghl/config'),
+    api('/api/admin/ghl/status'),
+  ]);
+  const s = st.status || {};
+  const stats = st.stats || {};
+  const syncedPct = stats.total ? Math.round((stats.synced / stats.total) * 100) : 0;
+  const progPct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+
+  $('app').innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="label">Total Leads</div><div class="value">${(stats.total||0).toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Synced to GHL</div><div class="value">${(stats.synced||0).toLocaleString()} <span class="muted" style="font-size:12px">(${syncedPct}%)</span></div></div>
+      <div class="stat"><div class="label">Unsynced w/ Phone</div><div class="value">${(stats.unsynced_with_phone||0).toLocaleString()}</div></div>
+      <div class="stat"><div class="label">${s.running?'Running':'Idle'}</div><div class="value" style="color:${s.running?'#7dffb6':'#7a8796'}">${s.running?progPct+'%':'—'}</div></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:14px">
+      <div class="panel-header"><h2>GoHighLevel Credentials</h2></div>
+      <div class="panel-body" style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end">
+        <div>
+          <label>Private Integration Token</label>
+          <input id="ghl-key" placeholder="pit-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="" autocomplete="off">
+          <div class="muted" style="font-size:11px;margin-top:4px">${cfg.hasKey ? 'Saved: <code>'+esc(cfg.keyMask)+'</code> — leave blank to keep unchanged' : 'Not set'}</div>
+        </div>
+        <div>
+          <label>Location ID</label>
+          <input id="ghl-loc" placeholder="e.g. bXXXXXXXXXXXXXXXXXX" value="${esc(cfg.locationId||'')}">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="primary" onclick="saveGhlConfig()">Save</button>
+          <button onclick="clearGhlConfig()">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:14px">
+      <div class="panel-header"><h2>Sync</h2></div>
+      <div class="panel-body" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
+        <div style="width:200px">
+          <label>Industry filter (optional)</label>
+          <input id="ghl-f-industry" placeholder="e.g. Plumber">
+        </div>
+        <div style="width:100px">
+          <label>State</label>
+          <input id="ghl-f-state" placeholder="FL">
+        </div>
+        <div style="width:160px">
+          <label>City</label>
+          <input id="ghl-f-city" placeholder="Miami">
+        </div>
+        <div style="width:140px">
+          <label>Limit</label>
+          <input id="ghl-f-limit" value="1000" type="number" min="1" max="1000000">
+        </div>
+        <button class="primary" ${s.running?'disabled':''} onclick="startGhlSync()">▶ Start sync (unsynced only)</button>
+        <button ${s.running?'disabled':''} onclick="startGhlSyncAll()">Sync ALL matching (even synced)</button>
+        <button class="danger" ${!s.running?'disabled':''} onclick="cancelGhlSync()">⏸ Cancel</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><h2>Status</h2></div>
+      <div class="panel-body">
+        ${s.total ? `
+          <div style="margin-bottom:8px">${s.done.toLocaleString()} / ${s.total.toLocaleString()} — ${s.created} created · ${s.updated} updated · ${s.errors} errors${s.current?' · current: <code>'+esc(s.current)+'</code>':''}</div>
+          <div style="background:var(--border);height:10px;border-radius:5px;overflow:hidden">
+            <div style="background:#7dffb6;height:100%;width:${progPct}%;transition:width .3s"></div>
+          </div>
+          ${s.last_error ? `<div style="margin-top:8px;color:#ff8080;font-size:12px">Last error: ${esc(s.last_error)}</div>` : ''}
+        ` : '<div class="muted">No sync in progress. Configure credentials and click Start.</div>'}
+        <div class="log-box" style="margin-top:12px;background:#0a0d14;padding:10px;border-radius:6px;font-family:monospace;font-size:11px;max-height:280px;overflow:auto;white-space:pre-wrap;color:#9fb3c8">${(s.log_tail||[]).map(l=>esc(l)).join('\n') || '<span class="muted">(no log yet)</span>'}</div>
+      </div>
+    </div>
+  `;
+  startGhlPoll();
+}
+
+function startGhlPoll() { stopGhlPoll(); ghlPollTimer = setInterval(() => { if (currentView==='ghl') renderGhl().catch(()=>{}); }, 3000); }
+function stopGhlPoll() { if (ghlPollTimer) { clearInterval(ghlPollTimer); ghlPollTimer = null; } }
+
+async function saveGhlConfig() {
+  const apiKey = $('ghl-key').value.trim();
+  const locationId = $('ghl-loc').value.trim();
+  if (!locationId) { alert('Location ID required'); return; }
+  const body = { locationId };
+  if (apiKey) body.apiKey = apiKey;
+  await api('/api/admin/ghl/config', { method: 'POST', body: JSON.stringify(body), headers: {'Content-Type':'application/json'} });
+  $('ghl-key').value = '';
+  renderGhl();
+}
+async function clearGhlConfig() {
+  if (!confirm('Clear saved GHL credentials?')) return;
+  await api('/api/admin/ghl/config', { method: 'POST', body: JSON.stringify({ apiKey: '', locationId: '' }), headers: {'Content-Type':'application/json'} });
+  renderGhl();
+}
+function ghlBuildFilter() {
+  return {
+    industry: $('ghl-f-industry').value.trim() || undefined,
+    state: $('ghl-f-state').value.trim() || undefined,
+    city: $('ghl-f-city').value.trim() || undefined,
+    limit: +$('ghl-f-limit').value || 1000,
+  };
+}
+async function startGhlSync() {
+  const filter = ghlBuildFilter();
+  try {
+    const r = await api('/api/admin/ghl/sync', { method: 'POST', body: JSON.stringify({ filter, onlyUnsynced: true, trigger: 'filter-unsynced' }), headers: {'Content-Type':'application/json'} });
+    if (r.error) { alert(r.error); return; }
+    if (!r.total) { alert('No unsynced leads match that filter.'); return; }
+    renderGhl();
+  } catch (e) { alert('Start failed: ' + e.message); }
+}
+async function startGhlSyncAll() {
+  const filter = ghlBuildFilter();
+  if (!confirm('Sync ALL matching leads (including already synced)? This will re-push them to GHL.')) return;
+  try {
+    const r = await api('/api/admin/ghl/sync', { method: 'POST', body: JSON.stringify({ filter, onlyUnsynced: false, trigger: 'filter-all' }), headers: {'Content-Type':'application/json'} });
+    if (r.error) { alert(r.error); return; }
+    if (!r.total) { alert('No leads match that filter.'); return; }
+    renderGhl();
+  } catch (e) { alert('Start failed: ' + e.message); }
+}
+async function cancelGhlSync() {
+  await api('/api/admin/ghl/cancel', { method: 'POST' });
+  renderGhl();
+}
+
 let importData = { headers: [], rows: [], mapping: {}, filename: '' };
 async function renderImport() {
   $('app').innerHTML = `
