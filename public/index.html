@@ -731,9 +731,77 @@ async function cancelAllQueued() {
 // ============== MASS SCRAPE VIEW ==============
 let massScrapePoll = null;
 async function renderMassScrape() {
-  const s = await api('/api/admin/mass-scrape/status');
+  if (massScrapePoll) { clearInterval(massScrapePoll); massScrapePoll = null; }
+  // Static shell rendered ONCE (so input focus/values survive). Poll updates only #mass-dynamic.
   const settingsR = await api('/api/admin/mass-scrape/settings');
   const st = settingsR.settings || {};
+
+  $('app').innerHTML = `
+    <div style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+        <h2 style="margin:0">Mass Scrape Orchestrator</h2>
+        <span id="ms-status-badge" style="padding:4px 10px;border-radius:10px;background:#555;color:#fff;font-size:12px">…</span>
+        <button onclick="massStart()" style="background:#164">▶ Start</button>
+        <button onclick="massPause()" style="background:#633">⏸ Pause</button>
+        <button onclick="massSeed2()">Seed Phase 2</button>
+        <button onclick="massRetry()">Retry Failed</button>
+        <button onclick="refreshMassDynamic()">↻ Refresh</button>
+      </div>
+
+      <div id="mass-dynamic"></div>
+
+      <h3 style="margin-top:20px">Settings</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px;align-items:end">
+        <label>Industry filter
+          <input id="ms-filter" value="${esc(st.mass_scrape_industry_filter||'home-services')}" style="width:160px">
+        </label>
+        <label>Max inflight / worker
+          <input id="ms-inflight" type="number" min="1" max="10" value="${esc(st.mass_scrape_max_inflight_per_worker||'2')}" style="width:80px">
+        </label>
+        <label>Tick (sec)
+          <input id="ms-tick" type="number" min="5" max="600" value="${esc(st.mass_scrape_tick_sec||'30')}" style="width:80px">
+        </label>
+        <label>AI monitor
+          <input id="ms-ai" type="checkbox" ${st.mass_scrape_ai_monitor_enabled==='1'?'checked':''}>
+        </label>
+        <button onclick="massSaveSettings()">Save Settings</button>
+      </div>
+
+      <h3 style="margin-top:20px">AI Provider</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px;align-items:end">
+        <label>Provider
+          <select id="ms-ai-provider" style="width:120px">
+            <option value="groq"   ${(st.ai_provider||'groq')==='groq'?'selected':''}>Groq</option>
+            <option value="openai" ${st.ai_provider==='openai'?'selected':''}>OpenAI</option>
+          </select>
+        </label>
+        <label>Groq API Key
+          <input id="ms-groq-key" type="password" placeholder="${st.groq_api_key_set?'Saved: '+esc(st.groq_api_key_mask)+' — leave blank to keep':'gsk_…'}" style="width:280px" autocomplete="off">
+        </label>
+        <label>OpenAI API Key
+          <input id="ms-openai-key" type="password" placeholder="${st.openai_api_key_set?'Saved: '+esc(st.openai_api_key_mask)+' — leave blank to keep':'sk-…'}" style="width:280px" autocomplete="off">
+        </label>
+        <button onclick="massSaveAi()">Save AI Keys</button>
+      </div>
+    </div>
+  `;
+  await refreshMassDynamic();
+  massScrapePoll = setInterval(() => {
+    if (currentView !== 'masscrape') { clearInterval(massScrapePoll); massScrapePoll = null; return; }
+    refreshMassDynamic().catch(()=>{});
+  }, 10000);
+}
+
+async function refreshMassDynamic() {
+  const host = document.getElementById('mass-dynamic');
+  if (!host) return;
+  const s = await api('/api/admin/mass-scrape/status').catch(() => null);
+  if (!s) return;
+  const badge = document.getElementById('ms-status-badge');
+  if (badge) {
+    badge.textContent = s.enabled ? '● RUNNING' : '○ paused';
+    badge.style.background = s.enabled ? '#164' : '#555';
+  }
   const p1 = s.byPhase[1] || {}, p2 = s.byPhase[2] || {};
   const p1Total = (p1.pending||0)+(p1.dispatched||0)+(p1.done||0)+(p1.failed||0)+(p1.skipped||0);
   const p2Total = (p2.pending||0)+(p2.dispatched||0)+(p2.done||0)+(p2.failed||0)+(p2.skipped||0);
@@ -741,88 +809,71 @@ async function renderMassScrape() {
   const pctP2 = p2Total ? ((p2.done||0) / p2Total * 100).toFixed(1) : '0.0';
   const etaStr = s.eta_hours != null ? (s.eta_hours > 72 ? (s.eta_hours/24).toFixed(1)+'d' : s.eta_hours.toFixed(1)+'h') : '—';
 
-  $('app').innerHTML = `
-    <div style="padding:20px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-        <h2 style="margin:0">Mass Scrape Orchestrator</h2>
-        <span style="padding:4px 10px;border-radius:10px;background:${s.enabled?'#164':'#555'};color:#fff;font-size:12px">${s.enabled?'● RUNNING':'○ paused'}</span>
-        <button onclick="massStart()" style="background:#164">▶ Start</button>
-        <button onclick="massPause()" style="background:#633">⏸ Pause</button>
-        <button onclick="massSeed2()">Seed Phase 2</button>
-        <button onclick="massRetry()">Retry Failed</button>
-        <button onclick="loadCurrent()">↻ Refresh</button>
-      </div>
+  host.innerHTML = `
+    <div class="stats" style="margin-bottom:16px">
+      <div class="stat"><div class="label">Rate (last hr)</div><div class="value">${s.rate_per_hour||0}/hr</div></div>
+      <div class="stat"><div class="label">ETA</div><div class="value">${etaStr}</div></div>
+      <div class="stat"><div class="label">Phase 1 Leads Found</div><div class="value">${(p1.leads||0).toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Phase 2 Leads Found</div><div class="value">${(p2.leads||0).toLocaleString()}</div></div>
+    </div>
 
-      <div class="stats" style="margin-bottom:16px">
-        <div class="stat"><div class="label">Rate (last hr)</div><div class="value">${s.rate_per_hour||0}/hr</div></div>
-        <div class="stat"><div class="label">ETA</div><div class="value">${etaStr}</div></div>
-        <div class="stat"><div class="label">Phase 1 Leads Found</div><div class="value">${(p1.leads||0).toLocaleString()}</div></div>
-        <div class="stat"><div class="label">Phase 2 Leads Found</div><div class="value">${(p2.leads||0).toLocaleString()}</div></div>
-      </div>
-
-      <div style="margin-bottom:16px">
-        <div style="font-size:13px;color:#aaa;margin-bottom:4px">Phase 1 (top cities, pop ≥ 10k)</div>
-        <div style="background:#222;border-radius:6px;height:22px;position:relative;overflow:hidden">
-          <div style="background:linear-gradient(90deg,#0c6,#0f9);height:100%;width:${pctP1}%;transition:width .3s"></div>
-          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;mix-blend-mode:difference">
-            ${(p1.done||0).toLocaleString()} / ${p1Total.toLocaleString()} (${pctP1}%) · pending ${p1.pending||0} · inflight ${p1.dispatched||0} · failed ${p1.failed||0}
-          </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;color:#aaa;margin-bottom:4px">Phase 1 (top cities, pop ≥ 10k)</div>
+      <div style="background:#222;border-radius:6px;height:22px;position:relative;overflow:hidden">
+        <div style="background:linear-gradient(90deg,#0c6,#0f9);height:100%;width:${pctP1}%;transition:width .3s"></div>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;mix-blend-mode:difference">
+          ${(p1.done||0).toLocaleString()} / ${p1Total.toLocaleString()} (${pctP1}%) · pending ${p1.pending||0} · inflight ${p1.dispatched||0} · failed ${p1.failed||0}
         </div>
-      </div>
-
-      <div style="margin-bottom:20px">
-        <div style="font-size:13px;color:#aaa;margin-bottom:4px">Phase 2 (remaining cities)</div>
-        <div style="background:#222;border-radius:6px;height:22px;position:relative;overflow:hidden">
-          <div style="background:linear-gradient(90deg,#069,#0af);height:100%;width:${pctP2}%;transition:width .3s"></div>
-          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;mix-blend-mode:difference">
-            ${(p2.done||0).toLocaleString()} / ${p2Total.toLocaleString()} (${pctP2}%) · pending ${p2.pending||0} · inflight ${p2.dispatched||0} · failed ${p2.failed||0}
-          </div>
-        </div>
-      </div>
-
-      <h3 style="margin-bottom:8px">Per-Industry Progress</h3>
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="background:#222">
-          <th style="text-align:left;padding:6px 10px">Industry</th>
-          <th style="text-align:right;padding:6px 10px">Pending</th>
-          <th style="text-align:right;padding:6px 10px">Inflight</th>
-          <th style="text-align:right;padding:6px 10px">Done</th>
-          <th style="text-align:right;padding:6px 10px">Failed</th>
-          <th style="text-align:right;padding:6px 10px">Leads Found</th>
-        </tr></thead>
-        <tbody>
-          ${(s.byIndustry||[]).map(r => `<tr style="border-bottom:1px solid #222">
-            <td style="padding:6px 10px">${r.industry||'—'}</td>
-            <td style="padding:6px 10px;text-align:right">${r.pending||0}</td>
-            <td style="padding:6px 10px;text-align:right">${r.dispatched||0}</td>
-            <td style="padding:6px 10px;text-align:right;color:#0f9">${r.done||0}</td>
-            <td style="padding:6px 10px;text-align:right;color:${r.failed?'#f66':'#aaa'}">${r.failed||0}</td>
-            <td style="padding:6px 10px;text-align:right">${(r.leads||0).toLocaleString()}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-
-      <h3 style="margin-top:20px">Settings</h3>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px">
-        <label>Industry filter
-          <input id="ms-filter" value="${st.mass_scrape_industry_filter||'home-services'}" style="width:160px">
-        </label>
-        <label>Max inflight / worker
-          <input id="ms-inflight" type="number" min="1" max="10" value="${st.mass_scrape_max_inflight_per_worker||2}" style="width:80px">
-        </label>
-        <label>Tick (sec)
-          <input id="ms-tick" type="number" min="5" max="600" value="${st.mass_scrape_tick_sec||30}" style="width:80px">
-        </label>
-        <label>AI monitor
-          <input id="ms-ai" type="checkbox" ${st.mass_scrape_ai_monitor_enabled==='1'?'checked':''}>
-        </label>
-        <button onclick="massSaveSettings()">Save Settings</button>
       </div>
     </div>
+
+    <div style="margin-bottom:20px">
+      <div style="font-size:13px;color:#aaa;margin-bottom:4px">Phase 2 (remaining cities)</div>
+      <div style="background:#222;border-radius:6px;height:22px;position:relative;overflow:hidden">
+        <div style="background:linear-gradient(90deg,#069,#0af);height:100%;width:${pctP2}%;transition:width .3s"></div>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;mix-blend-mode:difference">
+          ${(p2.done||0).toLocaleString()} / ${p2Total.toLocaleString()} (${pctP2}%) · pending ${p2.pending||0} · inflight ${p2.dispatched||0} · failed ${p2.failed||0}
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-bottom:8px">Per-Industry Progress</h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#222">
+        <th style="text-align:left;padding:6px 10px">Industry</th>
+        <th style="text-align:right;padding:6px 10px">Pending</th>
+        <th style="text-align:right;padding:6px 10px">Inflight</th>
+        <th style="text-align:right;padding:6px 10px">Done</th>
+        <th style="text-align:right;padding:6px 10px">Failed</th>
+        <th style="text-align:right;padding:6px 10px">Leads Found</th>
+      </tr></thead>
+      <tbody>
+        ${(s.byIndustry||[]).map(r => `<tr style="border-bottom:1px solid #222">
+          <td style="padding:6px 10px">${r.industry||'—'}</td>
+          <td style="padding:6px 10px;text-align:right">${r.pending||0}</td>
+          <td style="padding:6px 10px;text-align:right">${r.dispatched||0}</td>
+          <td style="padding:6px 10px;text-align:right;color:#0f9">${r.done||0}</td>
+          <td style="padding:6px 10px;text-align:right;color:${r.failed?'#f66':'#aaa'}">${r.failed||0}</td>
+          <td style="padding:6px 10px;text-align:right">${(r.leads||0).toLocaleString()}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
   `;
-  // Poll while on this tab
-  if (massScrapePoll) clearInterval(massScrapePoll);
-  massScrapePoll = setInterval(() => { if (currentView === 'masscrape') renderMassScrape(); else { clearInterval(massScrapePoll); massScrapePoll = null; } }, 10000);
+}
+
+async function massSaveAi() {
+  const body = {
+    ai_provider: $('ms-ai-provider').value,
+  };
+  const gk = $('ms-groq-key').value.trim();
+  const ok_ = $('ms-openai-key').value.trim();
+  if (gk)  body.groq_api_key = gk;
+  if (ok_) body.openai_api_key = ok_;
+  await api('/api/admin/mass-scrape/settings', { method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type':'application/json'} });
+  $('ms-groq-key').value = '';
+  $('ms-openai-key').value = '';
+  alert('AI keys saved.');
+  renderMassScrape();
 }
 
 async function massStart() {
@@ -1104,22 +1155,11 @@ function autoMapHeader(h) {
 let ghlPollTimer = null;
 async function renderGhl() {
   stopGhlPoll();
-  const [cfg, st] = await Promise.all([
-    api('/api/admin/ghl/config'),
-    api('/api/admin/ghl/status'),
-  ]);
-  const s = st.status || {};
-  const stats = st.stats || {};
-  const syncedPct = stats.total ? Math.round((stats.synced / stats.total) * 100) : 0;
-  const progPct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+  // Static shell: creds + filter form. Rendered once. Poll only updates #ghl-dynamic.
+  const cfg = await api('/api/admin/ghl/config');
 
   $('app').innerHTML = `
-    <div class="stats">
-      <div class="stat"><div class="label">Total Leads</div><div class="value">${(stats.total||0).toLocaleString()}</div></div>
-      <div class="stat"><div class="label">Synced to GHL</div><div class="value">${(stats.synced||0).toLocaleString()} <span class="muted" style="font-size:12px">(${syncedPct}%)</span></div></div>
-      <div class="stat"><div class="label">Unsynced w/ Phone</div><div class="value">${(stats.unsynced_with_phone||0).toLocaleString()}</div></div>
-      <div class="stat"><div class="label">${s.running?'Running':'Idle'}</div><div class="value" style="color:${s.running?'#7dffb6':'#7a8796'}">${s.running?progPct+'%':'—'}</div></div>
-    </div>
+    <div id="ghl-dynamic"></div>
 
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-header"><h2>GoHighLevel Credentials</h2></div>
@@ -1127,7 +1167,7 @@ async function renderGhl() {
         <div>
           <label>Private Integration Token</label>
           <input id="ghl-key" placeholder="pit-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="" autocomplete="off">
-          <div class="muted" style="font-size:11px;margin-top:4px">${cfg.hasKey ? 'Saved: <code>'+esc(cfg.keyMask)+'</code> — leave blank to keep unchanged' : 'Not set'}</div>
+          <div class="muted" style="font-size:11px;margin-top:4px" id="ghl-key-status">${cfg.hasKey ? 'Saved: <code>'+esc(cfg.keyMask)+'</code> — leave blank to keep unchanged' : 'Not set'}</div>
         </div>
         <div>
           <label>Location ID</label>
@@ -1159,13 +1199,33 @@ async function renderGhl() {
           <label>Limit</label>
           <input id="ghl-f-limit" value="1000" type="number" min="1" max="1000000">
         </div>
-        <button class="primary" ${s.running?'disabled':''} onclick="startGhlSync()">▶ Start sync (unsynced only)</button>
-        <button ${s.running?'disabled':''} onclick="startGhlSyncAll()">Sync ALL matching (even synced)</button>
-        <button class="danger" ${!s.running?'disabled':''} onclick="cancelGhlSync()">⏸ Cancel</button>
+        <button id="ghl-btn-start" class="primary" onclick="startGhlSync()">▶ Start sync (unsynced only)</button>
+        <button id="ghl-btn-all" onclick="startGhlSyncAll()">Sync ALL matching (even synced)</button>
+        <button id="ghl-btn-cancel" class="danger" onclick="cancelGhlSync()" disabled>⏸ Cancel</button>
       </div>
     </div>
+  `;
+  await refreshGhlDynamic();
+  startGhlPoll();
+}
 
-    <div class="panel">
+async function refreshGhlDynamic() {
+  const host = document.getElementById('ghl-dynamic');
+  if (!host) return;
+  const st = await api('/api/admin/ghl/status').catch(() => null);
+  if (!st) return;
+  const s = st.status || {}; const stats = st.stats || {};
+  const syncedPct = stats.total ? Math.round((stats.synced / stats.total) * 100) : 0;
+  const progPct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+  host.innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="label">Total Leads</div><div class="value">${(stats.total||0).toLocaleString()}</div></div>
+      <div class="stat"><div class="label">Synced to GHL</div><div class="value">${(stats.synced||0).toLocaleString()} <span class="muted" style="font-size:12px">(${syncedPct}%)</span></div></div>
+      <div class="stat"><div class="label">Unsynced w/ Phone</div><div class="value">${(stats.unsynced_with_phone||0).toLocaleString()}</div></div>
+      <div class="stat"><div class="label">${s.running?'Running':'Idle'}</div><div class="value" style="color:${s.running?'#7dffb6':'#7a8796'}">${s.running?progPct+'%':'—'}</div></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:14px">
       <div class="panel-header"><h2>Status</h2></div>
       <div class="panel-body">
         ${s.total ? `
@@ -1179,10 +1239,16 @@ async function renderGhl() {
       </div>
     </div>
   `;
-  startGhlPoll();
+  // Toggle action buttons based on run state without touching inputs
+  const bStart = document.getElementById('ghl-btn-start');
+  const bAll   = document.getElementById('ghl-btn-all');
+  const bCan   = document.getElementById('ghl-btn-cancel');
+  if (bStart) bStart.disabled = !!s.running;
+  if (bAll)   bAll.disabled   = !!s.running;
+  if (bCan)   bCan.disabled   = !s.running;
 }
 
-function startGhlPoll() { stopGhlPoll(); ghlPollTimer = setInterval(() => { if (currentView==='ghl') renderGhl().catch(()=>{}); }, 3000); }
+function startGhlPoll() { stopGhlPoll(); ghlPollTimer = setInterval(() => { if (currentView==='ghl') refreshGhlDynamic().catch(()=>{}); }, 3000); }
 function stopGhlPoll() { if (ghlPollTimer) { clearInterval(ghlPollTimer); ghlPollTimer = null; } }
 
 async function saveGhlConfig() {

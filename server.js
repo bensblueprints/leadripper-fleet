@@ -703,14 +703,30 @@ app.get('/api/admin/mass-scrape/logs', requireAdmin, (req, res) => {
 });
 
 app.get('/api/admin/mass-scrape/settings', requireAdmin, (req, res) => {
-  const rows = db.prepare(`SELECT key, value FROM settings WHERE key LIKE 'mass_scrape_%'`).all();
+  const keys = ['mass_scrape_enabled','mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled','ai_provider','groq_api_key','openai_api_key'];
+  const placeholders = keys.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT key, value FROM settings WHERE key IN (${placeholders})`).all(...keys);
   const obj = {};
   for (const r of rows) obj[r.key] = r.value;
-  res.json({ settings: obj });
+  // Mask secret keys for the client
+  const mask = v => v ? (v.length <= 10 ? '•'.repeat(v.length) : v.slice(0, 6) + '…' + v.slice(-4)) : '';
+  const out = {
+    mass_scrape_enabled: obj.mass_scrape_enabled || '0',
+    mass_scrape_max_inflight_per_worker: obj.mass_scrape_max_inflight_per_worker || '2',
+    mass_scrape_industry_filter: obj.mass_scrape_industry_filter || 'home-services',
+    mass_scrape_tick_sec: obj.mass_scrape_tick_sec || '30',
+    mass_scrape_ai_monitor_enabled: obj.mass_scrape_ai_monitor_enabled || '0',
+    ai_provider: obj.ai_provider || 'groq',
+    groq_api_key_mask: mask(obj.groq_api_key || ''),
+    groq_api_key_set: !!obj.groq_api_key,
+    openai_api_key_mask: mask(obj.openai_api_key || ''),
+    openai_api_key_set: !!obj.openai_api_key,
+  };
+  res.json({ settings: out });
 });
 
 app.patch('/api/admin/mass-scrape/settings', requireAdmin, (req, res) => {
-  const allowed = ['mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled'];
+  const allowed = ['mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled','groq_api_key','ai_provider','openai_api_key'];
   const ins = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
   for (const [k, v] of Object.entries(req.body || {})) {
     if (allowed.includes(k)) ins.run(k, String(v));
