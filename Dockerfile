@@ -9,6 +9,7 @@ RUN npm install --omit=dev
 
 COPY server.js db.js license-hashes.json ./
 COPY public ./public
+COPY mass-scrape ./mass-scrape
 
 ENV DATA_DIR=/data
 ENV PORT=3000
