@@ -7,6 +7,7 @@ const db = require('./db');
 const massSeed = require('./mass-scrape/seed');
 const massScheduler = require('./mass-scrape/scheduler');
 const ghlSync = require('./ghl-sync');
+const aiAgent = require('./ai-agent');
 
 const app = express();
 app.use(cors());
@@ -703,7 +704,7 @@ app.get('/api/admin/mass-scrape/logs', requireAdmin, (req, res) => {
 });
 
 app.get('/api/admin/mass-scrape/settings', requireAdmin, (req, res) => {
-  const keys = ['mass_scrape_enabled','mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled','ai_provider','groq_api_key','openai_api_key'];
+  const keys = ['mass_scrape_enabled','mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled','ai_provider','groq_api_key','openai_api_key','anthropic_api_key','xai_api_key'];
   const placeholders = keys.map(() => '?').join(',');
   const rows = db.prepare(`SELECT key, value FROM settings WHERE key IN (${placeholders})`).all(...keys);
   const obj = {};
@@ -721,12 +722,16 @@ app.get('/api/admin/mass-scrape/settings', requireAdmin, (req, res) => {
     groq_api_key_set: !!obj.groq_api_key,
     openai_api_key_mask: mask(obj.openai_api_key || ''),
     openai_api_key_set: !!obj.openai_api_key,
+    anthropic_api_key_mask: mask(obj.anthropic_api_key || ''),
+    anthropic_api_key_set: !!obj.anthropic_api_key,
+    xai_api_key_mask: mask(obj.xai_api_key || ''),
+    xai_api_key_set: !!obj.xai_api_key,
   };
   res.json({ settings: out });
 });
 
 app.patch('/api/admin/mass-scrape/settings', requireAdmin, (req, res) => {
-  const allowed = ['mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled','groq_api_key','ai_provider','openai_api_key'];
+  const allowed = ['mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled','groq_api_key','ai_provider','openai_api_key','anthropic_api_key','xai_api_key'];
   const ins = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
   for (const [k, v] of Object.entries(req.body || {})) {
     if (allowed.includes(k)) ins.run(k, String(v));
@@ -808,6 +813,18 @@ app.post('/api/admin/ghl/reset-sync', requireAdmin, (req, res) => {
   const ids = Array.isArray(req.body?.leadIds) ? req.body.leadIds.map(Number).filter(Boolean) : [];
   const changed = ghlSync.bulkResetSync(db, ids);
   res.json({ ok: true, changed });
+});
+
+// ==================== AI ASSISTANT ====================
+
+app.post('/api/admin/ai/chat', requireAdmin, async (req, res) => {
+  try {
+    const { history = [], userMessage = '' } = req.body || {};
+    const r = await aiAgent.chat(db, { history, userMessage });
+    res.json(r);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ==================== UPDATES (self-hosted releases) ====================

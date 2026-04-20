@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 
-COPY server.js db.js ghl-sync.js license-hashes.json ./
+COPY server.js db.js ghl-sync.js ai-agent.js license-hashes.json ./
 COPY public ./public
 COPY mass-scrape ./mass-scrape
 

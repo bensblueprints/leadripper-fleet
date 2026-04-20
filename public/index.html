@@ -186,6 +186,7 @@
   <div class="tab" data-view="masscrape" onclick="showView('masscrape')">Mass Scrape</div>
   <div class="tab" data-view="leads" onclick="showView('leads')">Leads</div>
   <div class="tab" data-view="ghl" onclick="showView('ghl')">GHL Sync</div>
+  <div class="tab" data-view="ai" onclick="showView('ai')">AI Assistant</div>
   <div class="tab" data-view="import" onclick="showView('import')">Import</div>
 </div>
 
@@ -300,6 +301,7 @@ async function loadCurrent() {
     else if (currentView === 'masscrape') await renderMassScrape();
     else if (currentView === 'leads') await renderLeads();
     else if (currentView === 'ghl') await renderGhl();
+    else if (currentView === 'ai') await renderAi();
     else if (currentView === 'import') await renderImport();
   } catch (e) {
     $('app').innerHTML = `<div class="unauth">Error: ${e.message}. Check token.</div>`;
@@ -770,17 +772,29 @@ async function renderMassScrape() {
       <h3 style="margin-top:20px">AI Provider</h3>
       <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px;align-items:end">
         <label>Provider
-          <select id="ms-ai-provider" style="width:120px">
-            <option value="groq"   ${(st.ai_provider||'groq')==='groq'?'selected':''}>Groq</option>
-            <option value="openai" ${st.ai_provider==='openai'?'selected':''}>OpenAI</option>
+          <select id="ms-ai-provider" style="width:140px">
+            <option value="groq"      ${(st.ai_provider||'groq')==='groq'?'selected':''}>Groq</option>
+            <option value="openai"    ${st.ai_provider==='openai'?'selected':''}>OpenAI</option>
+            <option value="anthropic" ${st.ai_provider==='anthropic'?'selected':''}>Claude (Anthropic)</option>
+            <option value="xai"       ${st.ai_provider==='xai'?'selected':''}>Grok (xAI)</option>
           </select>
         </label>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;font-size:13px;margin-top:10px">
         <label>Groq API Key
-          <input id="ms-groq-key" type="password" placeholder="${st.groq_api_key_set?'Saved: '+esc(st.groq_api_key_mask)+' — leave blank to keep':'gsk_…'}" style="width:280px" autocomplete="off">
+          <input id="ms-groq-key" type="password" placeholder="${st.groq_api_key_set?'Saved: '+esc(st.groq_api_key_mask)+' — leave blank to keep':'gsk_…'}" autocomplete="off">
         </label>
         <label>OpenAI API Key
-          <input id="ms-openai-key" type="password" placeholder="${st.openai_api_key_set?'Saved: '+esc(st.openai_api_key_mask)+' — leave blank to keep':'sk-…'}" style="width:280px" autocomplete="off">
+          <input id="ms-openai-key" type="password" placeholder="${st.openai_api_key_set?'Saved: '+esc(st.openai_api_key_mask)+' — leave blank to keep':'sk-…'}" autocomplete="off">
         </label>
+        <label>Claude (Anthropic) API Key
+          <input id="ms-anthropic-key" type="password" placeholder="${st.anthropic_api_key_set?'Saved: '+esc(st.anthropic_api_key_mask)+' — leave blank to keep':'sk-ant-…'}" autocomplete="off">
+        </label>
+        <label>Grok (xAI) API Key
+          <input id="ms-xai-key" type="password" placeholder="${st.xai_api_key_set?'Saved: '+esc(st.xai_api_key_mask)+' — leave blank to keep':'xai-…'}" autocomplete="off">
+        </label>
+      </div>
+      <div style="margin-top:10px">
         <button onclick="massSaveAi()">Save AI Keys</button>
       </div>
     </div>
@@ -865,13 +879,19 @@ async function massSaveAi() {
   const body = {
     ai_provider: $('ms-ai-provider').value,
   };
-  const gk = $('ms-groq-key').value.trim();
+  const gk  = $('ms-groq-key').value.trim();
   const ok_ = $('ms-openai-key').value.trim();
+  const ak  = $('ms-anthropic-key').value.trim();
+  const xk  = $('ms-xai-key').value.trim();
   if (gk)  body.groq_api_key = gk;
   if (ok_) body.openai_api_key = ok_;
+  if (ak)  body.anthropic_api_key = ak;
+  if (xk)  body.xai_api_key = xk;
   await api('/api/admin/mass-scrape/settings', { method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type':'application/json'} });
   $('ms-groq-key').value = '';
   $('ms-openai-key').value = '';
+  $('ms-anthropic-key').value = '';
+  $('ms-xai-key').value = '';
   alert('AI keys saved.');
   renderMassScrape();
 }
@@ -1298,6 +1318,115 @@ async function cancelGhlSync() {
   renderGhl();
 }
 
+// ============== AI ASSISTANT VIEW ==============
+// History kept in a module-scope var so navigating away and back preserves the chat.
+let aiHistory = [];     // Anthropic-style messages (role + content blocks)
+let aiBusy = false;
+
+async function renderAi() {
+  $('app').innerHTML = `
+    <div style="display:flex;flex-direction:column;height:calc(100vh - 120px);padding:0 20px 16px">
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 0">
+        <h2 style="margin:0">AI Assistant</h2>
+        <span class="muted" style="font-size:12px">Tools: list/count leads · sync GHL · control mass-scrape · fleet stats</span>
+        <div style="flex:1"></div>
+        <button onclick="aiClear()">New chat</button>
+      </div>
+      <div id="ai-thread" style="flex:1;overflow-y:auto;background:#0a0d14;border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13px;line-height:1.5"></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <textarea id="ai-input" rows="3" placeholder="e.g. How many unsynced plumbers in FL?  —or—  Push all unsynced HVAC contractors in TX to GHL"
+          style="flex:1;resize:vertical;padding:10px;font-family:inherit;font-size:13px;background:#0a0d14;border:1px solid var(--border);border-radius:6px;color:var(--text)"
+          onkeydown="if (event.key==='Enter' && (event.ctrlKey||event.metaKey)) { event.preventDefault(); aiSend(); }"></textarea>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button id="ai-send-btn" class="primary" onclick="aiSend()">Send</button>
+          <span class="muted" style="font-size:10px;text-align:center">Ctrl+Enter</span>
+        </div>
+      </div>
+    </div>
+  `;
+  renderAiThread();
+}
+
+function renderAiThread() {
+  const host = document.getElementById('ai-thread');
+  if (!host) return;
+  if (!aiHistory.length && !aiBusy) {
+    host.innerHTML = `<div class="muted" style="text-align:center;padding:40px">Ask something. Examples:
+<div style="margin-top:14px;font-family:monospace;font-size:12px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">
+• How many unsynced leads with phone numbers do I have?
+• Show me the top 10 plumbers in Miami by review count
+• Sync all unsynced roofing contractors in Texas to GHL
+• Start mass-scrape
+• What industries have the most unsynced leads?
+</div></div>`;
+    return;
+  }
+  const parts = [];
+  for (const m of aiHistory) {
+    if (m.role === 'user') {
+      const text = typeof m.content === 'string' ? m.content
+                  : (m.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+      const tools = typeof m.content === 'string' ? [] : (m.content || []).filter(b => b.type === 'tool_result');
+      if (text) {
+        parts.push(`<div style="margin:10px 0"><div style="color:#7dffb6;font-weight:600;margin-bottom:4px">You</div><div style="white-space:pre-wrap">${esc(text)}</div></div>`);
+      }
+      for (const tr of tools) {
+        const shown = String(tr.content || '').slice(0, 800);
+        parts.push(`<details style="margin:6px 0 6px 18px;font-family:monospace;font-size:11px;color:#9fb3c8"><summary style="cursor:pointer">↳ tool result</summary><pre style="white-space:pre-wrap;margin:4px 0">${esc(shown)}</pre></details>`);
+      }
+    } else if (m.role === 'assistant') {
+      const blocks = Array.isArray(m.content) ? m.content : [{type:'text', text: String(m.content||'')}];
+      for (const b of blocks) {
+        if (b.type === 'text') {
+          parts.push(`<div style="margin:10px 0"><div style="color:#a9d8ff;font-weight:600;margin-bottom:4px">Claude</div><div style="white-space:pre-wrap">${esc(b.text || '')}</div></div>`);
+        } else if (b.type === 'tool_use') {
+          const input = JSON.stringify(b.input || {}, null, 2);
+          parts.push(`<details style="margin:6px 0 6px 18px;font-family:monospace;font-size:11px;color:#ffb347"><summary style="cursor:pointer">→ calling <code>${esc(b.name)}</code></summary><pre style="white-space:pre-wrap;margin:4px 0">${esc(input)}</pre></details>`);
+        }
+      }
+    }
+  }
+  if (aiBusy) parts.push('<div class="muted" style="padding:10px">thinking…</div>');
+  host.innerHTML = parts.join('');
+  host.scrollTop = host.scrollHeight;
+}
+
+async function aiSend() {
+  if (aiBusy) return;
+  const input = document.getElementById('ai-input');
+  const text = (input.value || '').trim();
+  if (!text) return;
+  input.value = '';
+  aiBusy = true;
+  const btn = document.getElementById('ai-send-btn');
+  if (btn) btn.disabled = true;
+  // Optimistically add the user message
+  aiHistory.push({ role: 'user', content: [{ type: 'text', text }] });
+  renderAiThread();
+  try {
+    const r = await api('/api/admin/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify({ history: aiHistory.slice(0, -1), userMessage: text }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (r.error) throw new Error(r.error);
+    // Server returns the appended messages (user + assistant turns + tool rounds)
+    // Replace our optimistic last-user entry with the authoritative list
+    aiHistory = aiHistory.slice(0, -1).concat(r.messages || []);
+  } catch (e) {
+    aiHistory.push({ role: 'assistant', content: [{ type: 'text', text: '⚠️ ' + e.message }] });
+  } finally {
+    aiBusy = false;
+    if (btn) btn.disabled = false;
+    renderAiThread();
+  }
+}
+
+function aiClear() {
+  aiHistory = [];
+  renderAiThread();
+}
+
 let importData = { headers: [], rows: [], mapping: {}, filename: '' };
 async function renderImport() {
   $('app').innerHTML = `
@@ -1423,7 +1552,15 @@ async function runImport() {
 })();
 
 loadCurrent();
-setInterval(() => { if (currentView === 'fleet' || currentView === 'jobs') loadCurrent(); }, 5000);
+// Auto-refresh the main Fleet / Jobs views, but skip the tick if the user is
+// typing in an input or hovering a button — prevents the layout from jumping
+// around while you're trying to interact with it.
+setInterval(() => {
+  if (currentView !== 'fleet' && currentView !== 'jobs') return;
+  const ae = document.activeElement;
+  if (ae && ['INPUT','TEXTAREA','SELECT','BUTTON'].includes(ae.tagName)) return;
+  loadCurrent();
+}, 10000);
 </script>
 </body>
 </html>
