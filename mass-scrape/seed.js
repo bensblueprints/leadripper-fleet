@@ -16,7 +16,31 @@ function loadIndustries(filterName) {
 
 function loadCities(phase) {
   const file = path.join(__dirname, `cities-phase${phase}.json`);
-  return readJson(file, []);
+  const list = readJson(file, null);
+  if (list && list.length) return list;
+
+  // Fallback: if phase files are missing, derive them from public/us-cities.json.
+  // Phase 1 = top 50 cities per state (by file order, typically alphabetical/size mix).
+  // Phase 2 = everything else.
+  // This lets mass-scrape run immediately without the SimpleMaps pop-join step.
+  const rawPath = path.join(__dirname, '..', 'public', 'us-cities.json');
+  const raw = readJson(rawPath, []);
+  if (!raw.length) return [];
+
+  const parsed = raw.map(c => {
+    const str = typeof c === 'string' ? c : (c.city_state || `${c.city}, ${c.state}`);
+    const parts = String(str).split(',').map(s => s.trim());
+    return { city_state: str, city: parts[0] || str, state: parts[1] || '' };
+  }).filter(x => x.city_state);
+
+  const perStateSeen = new Map();
+  const phase1 = [], phase2 = [];
+  for (const p of parsed) {
+    const n = perStateSeen.get(p.state) || 0;
+    if (n < 50) { phase1.push(p); perStateSeen.set(p.state, n + 1); }
+    else phase2.push(p);
+  }
+  return phase === 1 ? phase1 : phase2;
 }
 
 function seedPhase(db, { phase, industryFilter, logger = () => {} } = {}) {
