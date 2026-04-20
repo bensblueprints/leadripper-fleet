@@ -183,6 +183,7 @@
   <div class="tab active" data-view="fleet" onclick="showView('fleet')">Fleet</div>
   <div class="tab" data-view="dispatch" onclick="showView('dispatch')">Dispatch</div>
   <div class="tab" data-view="jobs" onclick="showView('jobs')">Jobs</div>
+  <div class="tab" data-view="masscrape" onclick="showView('masscrape')">Mass Scrape</div>
   <div class="tab" data-view="leads" onclick="showView('leads')">Leads</div>
   <div class="tab" data-view="import" onclick="showView('import')">Import</div>
 </div>
@@ -294,6 +295,7 @@ async function loadCurrent() {
     if (currentView === 'fleet') await renderFleet();
     else if (currentView === 'dispatch') await renderDispatch();
     else if (currentView === 'jobs') await renderJobs();
+    else if (currentView === 'masscrape') await renderMassScrape();
     else if (currentView === 'leads') await renderLeads();
     else if (currentView === 'import') await renderImport();
   } catch (e) {
@@ -720,6 +722,134 @@ async function cancelAllQueued() {
   if (!confirm('Delete every queued job?')) return;
   const r = await api('/api/admin/jobs/cancel-all', { method: 'POST' });
   alert(`Deleted ${r.cancelled} job(s).`);
+  loadCurrent();
+}
+
+// ============== MASS SCRAPE VIEW ==============
+let massScrapePoll = null;
+async function renderMassScrape() {
+  const s = await api('/api/admin/mass-scrape/status');
+  const settingsR = await api('/api/admin/mass-scrape/settings');
+  const st = settingsR.settings || {};
+  const p1 = s.byPhase[1] || {}, p2 = s.byPhase[2] || {};
+  const p1Total = (p1.pending||0)+(p1.dispatched||0)+(p1.done||0)+(p1.failed||0)+(p1.skipped||0);
+  const p2Total = (p2.pending||0)+(p2.dispatched||0)+(p2.done||0)+(p2.failed||0)+(p2.skipped||0);
+  const pctP1 = p1Total ? ((p1.done||0) / p1Total * 100).toFixed(1) : '0.0';
+  const pctP2 = p2Total ? ((p2.done||0) / p2Total * 100).toFixed(1) : '0.0';
+  const etaStr = s.eta_hours != null ? (s.eta_hours > 72 ? (s.eta_hours/24).toFixed(1)+'d' : s.eta_hours.toFixed(1)+'h') : '—';
+
+  $('app').innerHTML = `
+    <div style="padding:20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+        <h2 style="margin:0">Mass Scrape Orchestrator</h2>
+        <span style="padding:4px 10px;border-radius:10px;background:${s.enabled?'#164':'#555'};color:#fff;font-size:12px">${s.enabled?'● RUNNING':'○ paused'}</span>
+        <button onclick="massStart()" style="background:#164">▶ Start</button>
+        <button onclick="massPause()" style="background:#633">⏸ Pause</button>
+        <button onclick="massSeed2()">Seed Phase 2</button>
+        <button onclick="massRetry()">Retry Failed</button>
+        <button onclick="loadCurrent()">↻ Refresh</button>
+      </div>
+
+      <div class="stats" style="margin-bottom:16px">
+        <div class="stat"><div class="label">Rate (last hr)</div><div class="value">${s.rate_per_hour||0}/hr</div></div>
+        <div class="stat"><div class="label">ETA</div><div class="value">${etaStr}</div></div>
+        <div class="stat"><div class="label">Phase 1 Leads Found</div><div class="value">${(p1.leads||0).toLocaleString()}</div></div>
+        <div class="stat"><div class="label">Phase 2 Leads Found</div><div class="value">${(p2.leads||0).toLocaleString()}</div></div>
+      </div>
+
+      <div style="margin-bottom:16px">
+        <div style="font-size:13px;color:#aaa;margin-bottom:4px">Phase 1 (top cities, pop ≥ 10k)</div>
+        <div style="background:#222;border-radius:6px;height:22px;position:relative;overflow:hidden">
+          <div style="background:linear-gradient(90deg,#0c6,#0f9);height:100%;width:${pctP1}%;transition:width .3s"></div>
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;mix-blend-mode:difference">
+            ${(p1.done||0).toLocaleString()} / ${p1Total.toLocaleString()} (${pctP1}%) · pending ${p1.pending||0} · inflight ${p1.dispatched||0} · failed ${p1.failed||0}
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:20px">
+        <div style="font-size:13px;color:#aaa;margin-bottom:4px">Phase 2 (remaining cities)</div>
+        <div style="background:#222;border-radius:6px;height:22px;position:relative;overflow:hidden">
+          <div style="background:linear-gradient(90deg,#069,#0af);height:100%;width:${pctP2}%;transition:width .3s"></div>
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;mix-blend-mode:difference">
+            ${(p2.done||0).toLocaleString()} / ${p2Total.toLocaleString()} (${pctP2}%) · pending ${p2.pending||0} · inflight ${p2.dispatched||0} · failed ${p2.failed||0}
+          </div>
+        </div>
+      </div>
+
+      <h3 style="margin-bottom:8px">Per-Industry Progress</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#222">
+          <th style="text-align:left;padding:6px 10px">Industry</th>
+          <th style="text-align:right;padding:6px 10px">Pending</th>
+          <th style="text-align:right;padding:6px 10px">Inflight</th>
+          <th style="text-align:right;padding:6px 10px">Done</th>
+          <th style="text-align:right;padding:6px 10px">Failed</th>
+          <th style="text-align:right;padding:6px 10px">Leads Found</th>
+        </tr></thead>
+        <tbody>
+          ${(s.byIndustry||[]).map(r => `<tr style="border-bottom:1px solid #222">
+            <td style="padding:6px 10px">${r.industry||'—'}</td>
+            <td style="padding:6px 10px;text-align:right">${r.pending||0}</td>
+            <td style="padding:6px 10px;text-align:right">${r.dispatched||0}</td>
+            <td style="padding:6px 10px;text-align:right;color:#0f9">${r.done||0}</td>
+            <td style="padding:6px 10px;text-align:right;color:${r.failed?'#f66':'#aaa'}">${r.failed||0}</td>
+            <td style="padding:6px 10px;text-align:right">${(r.leads||0).toLocaleString()}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+
+      <h3 style="margin-top:20px">Settings</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px">
+        <label>Industry filter
+          <input id="ms-filter" value="${st.mass_scrape_industry_filter||'home-services'}" style="width:160px">
+        </label>
+        <label>Max inflight / worker
+          <input id="ms-inflight" type="number" min="1" max="10" value="${st.mass_scrape_max_inflight_per_worker||2}" style="width:80px">
+        </label>
+        <label>Tick (sec)
+          <input id="ms-tick" type="number" min="5" max="600" value="${st.mass_scrape_tick_sec||30}" style="width:80px">
+        </label>
+        <label>AI monitor
+          <input id="ms-ai" type="checkbox" ${st.mass_scrape_ai_monitor_enabled==='1'?'checked':''}>
+        </label>
+        <button onclick="massSaveSettings()">Save Settings</button>
+      </div>
+    </div>
+  `;
+  // Poll while on this tab
+  if (massScrapePoll) clearInterval(massScrapePoll);
+  massScrapePoll = setInterval(() => { if (currentView === 'masscrape') renderMassScrape(); else { clearInterval(massScrapePoll); massScrapePoll = null; } }, 10000);
+}
+
+async function massStart() {
+  const r = await api('/api/admin/mass-scrape/start', { method: 'POST' });
+  alert(r.seed?.inserted ? `Started. Seeded ${r.seed.inserted} new rows.` : 'Started.');
+  loadCurrent();
+}
+async function massPause() {
+  await api('/api/admin/mass-scrape/pause', { method: 'POST', body: JSON.stringify({ reason: 'admin' }) });
+  loadCurrent();
+}
+async function massSeed2() {
+  const r = await api('/api/admin/mass-scrape/seed-phase2', { method: 'POST' });
+  alert(`Seeded ${r.inserted||0} phase-2 rows (total ${r.total||0})`);
+  loadCurrent();
+}
+async function massRetry() {
+  const r = await api('/api/admin/mass-scrape/retry-failed', { method: 'POST' });
+  alert(`Requeued ${r.requeued||0} failed rows`);
+  loadCurrent();
+}
+async function massSaveSettings() {
+  const body = {
+    mass_scrape_industry_filter: $('ms-filter').value.trim(),
+    mass_scrape_max_inflight_per_worker: $('ms-inflight').value,
+    mass_scrape_tick_sec: $('ms-tick').value,
+    mass_scrape_ai_monitor_enabled: $('ms-ai').checked ? '1' : '0'
+  };
+  await api('/api/admin/mass-scrape/settings', { method: 'PATCH', body: JSON.stringify(body) });
+  alert('Saved.');
   loadCurrent();
 }
 

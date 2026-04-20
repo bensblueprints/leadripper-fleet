@@ -1,0 +1,17 @@
+[
+  { "gcid": "plumber",                    "name": "Plumber" },
+  { "gcid": "electrician",                "name": "Electrician" },
+  { "gcid": "hvac_contractor",            "name": "HVAC Contractor" },
+  { "gcid": "roofing_contractor",         "name": "Roofing Contractor" },
+  { "gcid": "general_contractor",         "name": "General Contractor" },
+  { "gcid": "landscaper",                 "name": "Landscaper" },
+  { "gcid": "lawn_care_service",          "name": "Lawn Care Service" },
+  { "gcid": "pest_control_service",       "name": "Pest Control Service" },
+  { "gcid": "house_cleaning_service",     "name": "House Cleaning Service" },
+  { "gcid": "garage_door_supplier",       "name": "Garage Door Supplier" },
+  { "gcid": "handyman",                   "name": "Handyman" },
+  { "gcid": "painter",                    "name": "Painter" },
+  { "gcid": "window_cleaning_service",    "name": "Window Cleaning Service" },
+  { "gcid": "tree_service",               "name": "Tree Service" },
+  { "gcid": "appliance_repair_service",   "name": "Appliance Repair Service" }
+]

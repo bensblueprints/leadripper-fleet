@@ -155,6 +155,54 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_node_logs_node_id ON node_logs(node_id, id DESC);
 `);
 
+// ---- Mass-scrape orchestrator tables ----
+db.exec(`
+  CREATE TABLE IF NOT EXISTS scrape_coverage (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    industry      TEXT NOT NULL,
+    gcid          TEXT NOT NULL,
+    city          TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    phase         INTEGER NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    job_id        INTEGER,
+    leads_found   INTEGER DEFAULT 0,
+    last_error    TEXT,
+    dispatched_at INTEGER,
+    completed_at  INTEGER,
+    UNIQUE(industry, city)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cov_status_phase ON scrape_coverage(status, phase);
+  CREATE INDEX IF NOT EXISTS idx_cov_job ON scrape_coverage(job_id);
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS mass_scrape_log (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    t      INTEGER NOT NULL,
+    level  TEXT DEFAULT 'info',
+    action TEXT,
+    reason TEXT,
+    meta   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_ms_log_t ON mass_scrape_log(t DESC);
+`);
+
+// Seed default settings if missing
+const defaultSettings = {
+  mass_scrape_enabled: '0',
+  mass_scrape_max_inflight_per_worker: '2',
+  mass_scrape_industry_filter: 'home-services',
+  mass_scrape_tick_sec: '30',
+  mass_scrape_ai_monitor_enabled: '0'
+};
+for (const [k, v] of Object.entries(defaultSettings)) {
+  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run(k, v);
+}
+
 // Keep last 500 log lines per node
 setInterval(() => {
   try {

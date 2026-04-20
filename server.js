@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const db = require('./db');
+const massSeed = require('./mass-scrape/seed');
+const massScheduler = require('./mass-scrape/scheduler');
 
 const app = express();
 app.use(cors());
@@ -197,6 +199,15 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
                        leads_harvested=leads_harvested+?
       WHERE id=?
     `).run(leads.length, node.id);
+    // Mass-scrape coverage: if this job came from the orchestrator, flip the row
+    db.prepare(
+      `UPDATE scrape_coverage
+       SET status = CASE WHEN ? IS NULL THEN 'done' ELSE 'failed' END,
+           leads_found = ?,
+           last_error = ?,
+           completed_at = ?
+       WHERE job_id = ?`
+    ).run(error, leads.length, error, t, job.id);
   });
   txn();
 
@@ -279,6 +290,26 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
   });
   txn();
   res.json({ ok: true, inserted, skipped });
+});
+
+// Worker pulls master leads (reverse mirror). Every connected install gets a
+// copy of the master lead book via this paginated endpoint.
+// since_id = worker's highest seen master id; pull in ascending order.
+app.get('/api/fleet/master-leads/pull', requireWorker, (req, res) => {
+  const sinceId = Math.max(0, +req.query.since_id || 0);
+  const limit = Math.min(Math.max(+req.query.limit || 500, 50), 2000);
+  const cols = ['id','name','phone','email','website','address','city','state',
+    'industry','gcid','search_term','google_category_raw','rating','reviews',
+    'website_platform','website_status','tags','business_hours',
+    'reviews_1star','reviews_2star','reviews_3star','reviews_4star','reviews_5star',
+    'ai_seo_score','ai_design_score','ai_seo_notes','ai_design_notes','ai_analyzed_at','ai_provider',
+    'created_at'];
+  const rows = db.prepare(
+    `SELECT ${cols.join(',')} FROM leads WHERE id > ? ORDER BY id ASC LIMIT ?`
+  ).all(sinceId, limit);
+  const nextId = rows.length ? rows[rows.length - 1].id : sinceId;
+  const hasMore = rows.length === limit;
+  res.json({ leads: rows, next_id: nextId, has_more: hasMore, returned: rows.length });
 });
 
 // ==================== ADMIN / DASHBOARD ENDPOINTS ====================
@@ -626,6 +657,91 @@ app.get('/api/admin/leads', requireAdmin, (req, res) => {
     : db.prepare(`SELECT * FROM leads ORDER BY id DESC LIMIT ?`).all(+limit);
   res.json({ leads: rows });
 });
+
+// ==================== MASS SCRAPE ORCHESTRATOR ====================
+
+app.get('/api/admin/mass-scrape/status', requireAdmin, (req, res) => {
+  res.json(massScheduler.stats(db));
+});
+
+app.post('/api/admin/mass-scrape/start', requireAdmin, (req, res) => {
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('mass_scrape_enabled', '1')`).run();
+  massScheduler.logMs(db, { action: 'start', reason: 'admin' });
+  // Kick seed if needed
+  const r = massSeed.ensureSeeded(db, { logger: (m) => console.log(m) });
+  res.json({ ok: true, seed: r });
+});
+
+app.post('/api/admin/mass-scrape/pause', requireAdmin, (req, res) => {
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('mass_scrape_enabled', '0')`).run();
+  massScheduler.logMs(db, { action: 'pause', reason: req.body?.reason || 'admin' });
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/mass-scrape/seed-phase2', requireAdmin, (req, res) => {
+  const r = massSeed.seedPhase2(db, { logger: (m) => console.log(m) });
+  res.json({ ok: true, ...r });
+});
+
+app.post('/api/admin/mass-scrape/retry-failed', requireAdmin, (req, res) => {
+  const changed = db.prepare(
+    `UPDATE scrape_coverage SET status='pending', last_error=NULL WHERE status='failed'`
+  ).run().changes;
+  res.json({ ok: true, requeued: changed });
+});
+
+app.get('/api/admin/mass-scrape/logs', requireAdmin, (req, res) => {
+  const limit = Math.min(+req.query.limit || 100, 500);
+  const rows = db.prepare(
+    `SELECT * FROM mass_scrape_log ORDER BY id DESC LIMIT ?`
+  ).all(limit);
+  res.json({ logs: rows });
+});
+
+app.get('/api/admin/mass-scrape/settings', requireAdmin, (req, res) => {
+  const rows = db.prepare(`SELECT key, value FROM settings WHERE key LIKE 'mass_scrape_%'`).all();
+  const obj = {};
+  for (const r of rows) obj[r.key] = r.value;
+  res.json({ settings: obj });
+});
+
+app.patch('/api/admin/mass-scrape/settings', requireAdmin, (req, res) => {
+  const allowed = ['mass_scrape_max_inflight_per_worker','mass_scrape_industry_filter','mass_scrape_tick_sec','mass_scrape_ai_monitor_enabled'];
+  const ins = db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`);
+  for (const [k, v] of Object.entries(req.body || {})) {
+    if (allowed.includes(k)) ins.run(k, String(v));
+  }
+  res.json({ ok: true });
+});
+
+// Schedule the scheduler tick
+let SCHEDULER_INTERVAL_MS = 30 * 1000;
+function rearmScheduler() {
+  try {
+    const s = +(db.prepare(`SELECT value FROM settings WHERE key='mass_scrape_tick_sec'`).get()?.value || 30);
+    SCHEDULER_INTERVAL_MS = Math.max(5, s) * 1000;
+  } catch {}
+}
+setInterval(() => {
+  try {
+    massScheduler.tick(db, { logger: (m) => console.log(m), seedMod: massSeed });
+  } catch (e) { console.error('[mass-scrape] tick error:', e.message); }
+  rearmScheduler();
+}, 30 * 1000);
+
+// Hourly: requeue rows failed >24h ago (capped to 1 retry)
+setInterval(() => {
+  try {
+    const n = massScheduler.requeueFailed(db);
+    if (n > 0) console.log(`[mass-scrape] requeued ${n} failed rows`);
+  } catch {}
+}, 60 * 60 * 1000);
+
+// Seed on boot (idempotent)
+try {
+  const r = massSeed.ensureSeeded(db, { logger: (m) => console.log(m) });
+  if (r.inserted > 0) console.log(`[mass-scrape boot] seeded ${r.inserted} rows`);
+} catch (e) { console.error('[mass-scrape boot] seed error:', e.message); }
 
 // ==================== UPDATES (self-hosted releases) ====================
 // Release binaries + latest.json live in /data/releases (Docker volume on Contabo).
