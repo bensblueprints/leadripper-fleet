@@ -175,11 +175,17 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
+  let skipped = 0;
   const txn = db.transaction(() => {
     for (const l of leads) {
+      // Defense-in-depth: never persist a lead without a business name —
+      // older workers had a field-mapping bug (scraper emits business_name,
+      // worker was reading l.name) that poisoned thousands of rows.
+      const nm = (l.name || l.business_name || '').toString().trim();
+      if (!nm) { skipped++; continue; }
       const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' ? l.tags : '[]');
       insertLead.run(job.id, node.id,
-        l.name || null, l.phone || null, l.email || null, l.website || null,
+        nm, l.phone || null, l.email || null, l.website || null,
         l.address || null, l.city || job.city, l.state || job.state,
         l.industry || null, l.gcid || null, l.search_term || job.industry,
         l.google_category_raw || null, l.rating || null, l.reviews || null,
@@ -213,7 +219,7 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
   });
   txn();
 
-  res.json({ ok: true, saved: leads.length });
+  res.json({ ok: true, saved: leads.length - skipped, skipped });
 });
 
 // Worker pushes log lines (activity stream). Accepts batch of {msg, job_id, level, t}.
