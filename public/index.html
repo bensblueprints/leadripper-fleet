@@ -294,12 +294,12 @@ function showView(v) {
 }
 
 async function loadCurrent() {
-  if (!token) { $('app').innerHTML = '<div class="unauth">Enter password above to load fleet data.</div>'; return; }
+  if (!token && currentView !== 'downloads') { $('app').innerHTML = '<div class="unauth">Enter password above to load fleet data.</div>'; return; }
   try {
     if (currentView === 'fleet') await renderFleet();
     else if (currentView === 'dispatch') await renderDispatch();
     else if (currentView === 'jobs') await renderJobs();
-    else if (currentView === 'masscrape') await renderMassScrape();
+    else if (currentView === 'massscrape') await renderMassScrape();
     else if (currentView === 'leads') await renderLeads();
     else if (currentView === 'ghl') await renderGhl();
     else if (currentView === 'ai') await renderAi();
