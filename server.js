@@ -957,7 +957,7 @@ app.post('/api/admin/updates/publish', requireAdmin, (req, res) => {
 const FW_RELEASES_DIR = path.join(RELEASES_DIR, 'fleet-worker');
 try { fs.mkdirSync(FW_RELEASES_DIR, { recursive: true }); } catch {}
 
-app.get('/api/updates/fleet-worker/latest', requireLicense, (req, res) => {
+app.get('/api/updates/fleet-worker/latest', (req, res) => {
   try {
     const p = path.join(FW_RELEASES_DIR, 'latest.json');
     if (!fs.existsSync(p)) return res.status(404).json({ error: 'no release published' });
@@ -975,7 +975,7 @@ app.get('/api/updates/fleet-worker/latest', requireLicense, (req, res) => {
   }
 });
 
-app.get('/api/updates/fleet-worker/download/:file', requireLicense, (req, res) => {
+app.get('/api/updates/fleet-worker/download/:file', (req, res) => {
   const name = path.basename(req.params.file);
   if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
   const fp = path.join(FW_RELEASES_DIR, name);
