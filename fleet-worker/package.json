@@ -9,6 +9,7 @@
     "build": "bun build --compile --target=bun-darwin-arm64 src/worker.js --outfile build/fleet-worker-arm64",
     "build:x64": "bun build --compile --target=bun-darwin-x64 src/worker.js --outfile build/fleet-worker-x64",
     "build:universal": "bun build --compile --target=bun-darwin-arm64 src/worker.js --outfile build/fleet-worker && bun build --compile --target=bun-darwin-x64 src/worker.js --outfile build/fleet-worker-x64",
+    "build:win": "bun build --compile --target=bun-windows-x64 --external=playwright-core src/worker.js --outfile build/fleet-worker.exe",
     "dmg": "node scripts/build-dmg.js"
   },
   "dependencies": {

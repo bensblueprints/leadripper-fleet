@@ -70,6 +70,7 @@ try {
   if (!ncols.includes('current_job_leads')) db.exec(`ALTER TABLE nodes ADD COLUMN current_job_leads INTEGER DEFAULT 0`);
   if (!ncols.includes('current_job_industry')) db.exec(`ALTER TABLE nodes ADD COLUMN current_job_industry TEXT`);
   if (!ncols.includes('current_job_city')) db.exec(`ALTER TABLE nodes ADD COLUMN current_job_city TEXT`);
+  if (!ncols.includes('node_mode')) db.exec(`ALTER TABLE nodes ADD COLUMN node_mode INTEGER DEFAULT 0`);
 } catch {}
 
 // Migration: recategorize queue column on leads

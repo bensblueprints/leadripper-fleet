@@ -61,9 +61,21 @@ if (!config.license_key) {
   config.license_key = process.env.FLEET_LICENSE_KEY || '';
   if (config.license_key) saveConfig(config);
 }
-if (config.cpu_cap == null) config.cpu_cap = 80;
-if (config.ram_cap == null) config.ram_cap = 80;
+if (config.node_mode == null) config.node_mode = false;
+if (config.accepted_terms == null) config.accepted_terms = false;
+if (config.cpu_cap == null) config.cpu_cap = config.node_mode ? 50 : 80;
+if (config.ram_cap == null) config.ram_cap = config.node_mode ? 50 : 80;
 if (config.label == null) config.label = os.hostname();
+
+const TERMS_TEXT = `LeadRipper Fleet Worker — Terms & Conditions
+
+By installing and running Fleet Worker without a license key, you agree that:
+1. This device becomes a distributed processing node for the LeadRipper fleet.
+2. Up to 50% of available CPU and RAM may be used to process scraping jobs.
+3. Jobs run silently in the background with no user interface.
+4. You may stop the service at any time via your system settings.
+
+To accept these terms, set accepted_terms=true in your config or use your installer.`;
 
 // ==================== Logging ====================
 const logBuffer = [];
@@ -104,6 +116,7 @@ async function fleetPost(endpoint, body = {}) {
     'x-license-key': config.license_key,
     'x-machine-id': config.machine_id,
   };
+  if (config.node_mode) headers['x-node-mode'] = '1';
   const res = await fetch(url, {
     method: 'POST',
     headers,
@@ -122,6 +135,7 @@ async function fleetGet(endpoint) {
     'x-license-key': config.license_key,
     'x-machine-id': config.machine_id,
   };
+  if (config.node_mode) headers['x-node-mode'] = '1';
   const res = await fetch(url, { headers });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -278,15 +292,26 @@ async function pullAndExecuteJob() {
 
 // ==================== Main Loop ====================
 async function main() {
-  if (!config.license_key) {
-    log('error', 'No license key configured. Set FLEET_LICENSE_KEY env var or add to ~/.fleet-worker/config.json');
-    process.exit(1);
+  if (!config.license_key && !config.node_mode) {
+    log('info', 'No license key found. Auto-enabling NODE MODE.');
+    log('info', TERMS_TEXT);
+    config.node_mode = true;
+    config.accepted_terms = true;
+    config.cpu_cap = 50;
+    config.ram_cap = 50;
+    saveConfig(config);
+  }
+
+  if (config.node_mode) {
+    cpuCap = 50;
+    ramCap = 50;
+    log('info', 'Running in NODE MODE — up to 50% CPU/RAM will be used for fleet jobs');
   }
 
   // Write PID file
   fs.writeFileSync(PID_FILE, String(process.pid));
 
-  log('info', `Fleet Worker starting — machine_id=${config.machine_id} fleet=${FLEET_URL}`);
+  log('info', `Fleet Worker starting — machine_id=${config.machine_id} fleet=${FLEET_URL} mode=${config.node_mode ? 'node' : 'licensed'}`);
 
   // Initial heartbeat
   try {

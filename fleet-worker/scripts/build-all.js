@@ -73,10 +73,11 @@ console.log('\n=== Packaging Windows ===\n');
 
 const winDir = path.join(DIST_DIR, 'FleetWorker-Windows');
 cleanDir(winDir);
-fs.copyFileSync(path.join(BUILD_DIR, 'fleet-worker.exe'), path.join(winDir, 'fleet-worker.exe'));
-fs.copyFileSync(path.join(ROOT, 'scripts', 'install-windows.bat'), path.join(winDir, 'install.bat'));
 
-// Copy node_modules for runtime
+// Copy binary (renamed for cleaner UX)
+fs.copyFileSync(path.join(BUILD_DIR, 'fleet-worker.exe'), path.join(winDir, 'FleetWorker.exe'));
+
+// Copy node_modules for runtime (playwright-core is external)
 const nodeModsSrc = path.join(ROOT, 'node_modules');
 const nodeModsDest = path.join(winDir, 'node_modules');
 if (fs.existsSync(nodeModsSrc)) {
@@ -87,14 +88,17 @@ if (fs.existsSync(nodeModsSrc)) {
 fs.writeFileSync(path.join(winDir, 'README.txt'), `Fleet Worker for Windows
 ==========================
 
-1. Run: install.bat YOUR_LICENSE_KEY
-2. The worker installs to %%LOCALAPPDATA%%\\FleetWorker
-3. It runs silently in the background via Task Scheduler
-4. Logs are at %%USERPROFILE%%\\.fleet-worker\\worker.log
+1. Extract this zip anywhere
+2. Double-click FleetWorker.exe to run
+3. It connects to the fleet and starts processing jobs immediately
+4. Logs and config are at %%USERPROFILE%%\\.fleet-worker\\worker.log
 
-To uninstall:
-  schtasks /Delete /TN FleetWorker /F
-  rmdir /S /Q %%LOCALAPPDATA%%\\FleetWorker
+To add a license key:
+  Edit %%USERPROFILE%%\\.fleet-worker\\config.json and add:
+  { "license_key": "your-key-here" }
+
+To stop:
+  Close the FleetWorker.exe window or press Ctrl+C
 `);
 
 // Zip it
