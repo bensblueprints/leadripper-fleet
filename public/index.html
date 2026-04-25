@@ -176,7 +176,7 @@
 <body>
 <header>
   <h1>LEADRIPPER <span>// FLEET CONTROL</span></h1>
-  <input type="password" class="token-input" id="admin-token" placeholder="Admin token" />
+  <input type="password" class="token-input" id="admin-token" placeholder="Password" />
 </header>
 
 <div class="tabs">
@@ -193,7 +193,7 @@
 
 <main>
   <div id="app">
-    <div class="unauth">Enter admin token above to load fleet data.</div>
+    <div class="unauth">Enter password above to load fleet data.</div>
   </div>
 </main>
 
@@ -217,7 +217,7 @@ async function api(path, opts = {}) {
     ...opts,
     headers: { 'Content-Type': 'application/json', 'x-admin-token': token, ...(opts.headers || {}) }
   });
-  if (res.status === 401) throw new Error('unauthorized — paste your admin token in the top-right field');
+  if (res.status === 401) throw new Error('unauthorized — enter password in the top-right field');
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try { const j = await res.json(); if (j.error) msg += `: ${j.error}`; } catch {}
@@ -294,7 +294,7 @@ function showView(v) {
 }
 
 async function loadCurrent() {
-  if (!token) { $('app').innerHTML = '<div class="unauth">Enter admin token above to load fleet data.</div>'; return; }
+  if (!token) { $('app').innerHTML = '<div class="unauth">Enter password above to load fleet data.</div>'; return; }
   try {
     if (currentView === 'fleet') await renderFleet();
     else if (currentView === 'dispatch') await renderDispatch();
@@ -306,7 +306,7 @@ async function loadCurrent() {
     else if (currentView === 'import') await renderImport();
     else if (currentView === 'downloads') await renderDownloads();
   } catch (e) {
-    $('app').innerHTML = `<div class="unauth">Error: ${e.message}. Check token.</div>`;
+    $('app').innerHTML = `<div class="unauth">Error: ${e.message}. Check password.</div>`;
   }
 }
 
@@ -645,7 +645,7 @@ window.loadPreset = function(n) {
 };
 
 async function dispatch() {
-  if (!token) return alert('Paste your admin token in the top-right field first.');
+  if (!token) return alert('Enter password in the top-right field first.');
   const industry = selectedIndustry?.name || $('d-industry').value.trim();
   const cities = $('d-cities').value.split('\n').map(s => s.trim()).filter(Boolean);
   const max_results = +$('d-max').value || 20;
@@ -1556,44 +1556,101 @@ async function runImport() {
 async function renderDownloads() {
   $('app').innerHTML = `<div class="panel"><div class="panel-header"><h2>Software Downloads</h2></div><div class="panel-body" id="downloads-body"><span class="muted">Loading...</span></div></div>`;
   try {
-    const data = await api('/api/admin/updates/versions');
-    const latest = data.latest || {};
-    const files = data.files || [];
-    if (!files.length) {
+    const [mainRes, fwRes] = await Promise.all([
+      fetch('/api/downloads/versions').catch(() => null),
+      fetch('/api/downloads/fleet-worker/versions').catch(() => null)
+    ]);
+    const mainData = mainRes && mainRes.ok ? await mainRes.json() : { files: [], latest: null };
+    const fwData = fwRes && fwRes.ok ? await fwRes.json() : { files: [], latest: null };
+
+    let html = '';
+
+    // Main app section
+    const mainFiles = mainData.files || [];
+    if (mainFiles.length) {
+      const mainLatest = mainData.latest || {};
+      const mainLatestAssets = new Set(Object.values(mainLatest.assets || {}));
+      const mainRows = mainFiles.map(f => {
+        const isLatest = mainLatestAssets.has(f.name) || f.name === 'latest.json';
+        return `
+          <tr>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><code>${esc(f.name)}</code>${isLatest ? ' <span style="color:var(--green);font-size:10px;font-weight:700">LATEST</span>' : ''}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${fmtBytes(f.size)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${f.mtime ? new Date(f.mtime).toLocaleString() : '—'}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">
+              <a class="btn" href="/api/downloads/download/${encodeURIComponent(f.name)}" download style="padding:4px 10px;font-size:11px">Download</a>
+            </td>
+          </tr>
+        `;
+      }).join('');
+      html += `
+        <h3 style="margin:20px 0 10px;color:var(--cyan);font-size:14px">LeadRipper Desktop</h3>
+        ${mainLatest.version ? `<div style="margin-bottom:14px;padding:10px 12px;background:rgba(61,220,132,.08);border:1px solid rgba(61,220,132,.2);border-radius:4px">
+          <strong style="color:var(--green)">Latest published version:</strong> <code>${esc(mainLatest.version)}</code>
+          ${mainLatest.notes ? `<div class="muted" style="margin-top:4px">${esc(mainLatest.notes)}</div>` : ''}
+        </div>` : ''}
+        <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:24px">
+          <thead>
+            <tr style="text-align:left;color:var(--cyan)">
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border)">File</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Size</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Modified</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">Action</th>
+            </tr>
+          </thead>
+          <tbody>${mainRows}</tbody>
+        </table>
+      `;
+    }
+
+    // Fleet Worker section
+    const fwFiles = fwData.files || [];
+    if (fwFiles.length) {
+      const fwLatest = fwData.latest || {};
+      const fwLatestAssets = new Set(Object.values(fwLatest.assets || {}));
+      const fwRows = fwFiles.map(f => {
+        const isLatest = fwLatestAssets.has(f.name) || f.name === 'latest.json';
+        return `
+          <tr>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><code>${esc(f.name)}</code>${isLatest ? ' <span style="color:var(--green);font-size:10px;font-weight:700">LATEST</span>' : ''}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${fmtBytes(f.size)}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${f.mtime ? new Date(f.mtime).toLocaleString() : '—'}</td>
+            <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">
+              <a class="btn" href="/api/downloads/fleet-worker/download/${encodeURIComponent(f.name)}" download style="padding:4px 10px;font-size:11px">Download</a>
+            </td>
+          </tr>
+        `;
+      }).join('');
+      html += `
+        <h3 style="margin:20px 0 10px;color:var(--cyan);font-size:14px">Fleet Worker</h3>
+        <div style="margin-bottom:14px;padding:10px 12px;background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.2);border-radius:4px">
+          <strong style="color:var(--blue)">Turn any computer into a fleet scraping node.</strong>
+          <div class="muted" style="margin-top:4px">Silent background installer. Runs on login. No UI.</div>
+        </div>
+        ${fwLatest.version ? `<div style="margin-bottom:14px;padding:10px 12px;background:rgba(61,220,132,.08);border:1px solid rgba(61,220,132,.2);border-radius:4px">
+          <strong style="color:var(--green)">Latest published version:</strong> <code>${esc(fwLatest.version)}</code>
+          ${fwLatest.notes ? `<div class="muted" style="margin-top:4px">${esc(fwLatest.notes)}</div>` : ''}
+        </div>` : ''}
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="text-align:left;color:var(--cyan)">
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border)">File</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Size</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Modified</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">Action</th>
+            </tr>
+          </thead>
+          <tbody>${fwRows}</tbody>
+        </table>
+      `;
+    }
+
+    if (!html) {
       $('downloads-body').innerHTML = '<span class="muted">No releases found.</span>';
       return;
     }
-    const latestAssets = new Set(Object.values(latest.assets || {}));
-    const rows = files.map(f => {
-      const isLatest = latestAssets.has(f.name) || f.name === 'latest.json';
-      return `
-        <tr>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><code>${esc(f.name)}</code>${isLatest ? ' <span style="color:var(--green);font-size:10px;font-weight:700">LATEST</span>' : ''}</td>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${fmtBytes(f.size)}</td>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${f.mtime ? new Date(f.mtime).toLocaleString() : '—'}</td>
-          <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">
-            <a class="btn" href="/api/admin/updates/download/${encodeURIComponent(f.name)}?token=${encodeURIComponent(token)}" download style="padding:4px 10px;font-size:11px">Download</a>
-          </td>
-        </tr>
-      `;
-    }).join('');
-    $('downloads-body').innerHTML = `
-      ${latest.version ? `<div style="margin-bottom:14px;padding:10px 12px;background:rgba(61,220,132,.08);border:1px solid rgba(61,220,132,.2);border-radius:4px">
-        <strong style="color:var(--green)">Latest published version:</strong> <code>${esc(latest.version)}</code>
-        ${latest.notes ? `<div class="muted" style="margin-top:4px">${esc(latest.notes)}</div>` : ''}
-      </div>` : ''}
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead>
-          <tr style="text-align:left;color:var(--cyan)">
-            <th style="padding:8px 10px;border-bottom:1px solid var(--border)">File</th>
-            <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Size</th>
-            <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Modified</th>
-            <th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">Action</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `;
+
+    $('downloads-body').innerHTML = html;
   } catch (e) {
     $('downloads-body').innerHTML = `<span class="muted">Error: ${esc(e.message)}</span>`;
   }

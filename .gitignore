@@ -5,3 +5,7 @@ node_modules/
 data/
 .env
 .DS_Store
+fleet-worker/build/
+fleet-worker/dist/
+releases/
+*.log

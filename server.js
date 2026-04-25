@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'change-me-in-coolify';
+const ADMIN_TOKEN = 'JEsus777$$!';
 
 // Load license hashes from bundled file + optional env override
 let LICENSE_HASHES = [];
@@ -951,6 +951,131 @@ app.post('/api/admin/updates/publish', requireAdmin, (req, res) => {
   const meta = { version, notes, assets, published_at: now() };
   fs.writeFileSync(path.join(RELEASES_DIR, 'latest.json'), JSON.stringify(meta, null, 2));
   res.json({ ok: true, meta });
+});
+
+// ==================== FLEET WORKER RELEASES ====================
+const FW_RELEASES_DIR = path.join(RELEASES_DIR, 'fleet-worker');
+try { fs.mkdirSync(FW_RELEASES_DIR, { recursive: true }); } catch {}
+
+app.get('/api/updates/fleet-worker/latest', requireLicense, (req, res) => {
+  try {
+    const p = path.join(FW_RELEASES_DIR, 'latest.json');
+    if (!fs.existsSync(p)) return res.status(404).json({ error: 'no release published' });
+    const meta = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const assets = {};
+    for (const [kind, name] of Object.entries(meta.assets || {})) {
+      const fp = path.join(FW_RELEASES_DIR, name);
+      if (fs.existsSync(fp)) {
+        assets[kind] = { name, size: fs.statSync(fp).size };
+      }
+    }
+    res.json({ version: meta.version, notes: meta.notes || '', assets });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/updates/fleet-worker/download/:file', requireLicense, (req, res) => {
+  const name = path.basename(req.params.file);
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
+  const fp = path.join(FW_RELEASES_DIR, name);
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
+  res.sendFile(path.resolve(fp));
+});
+
+app.post('/api/admin/updates/fleet-worker/upload', requireAdmin, express.raw({ type: '*/*', limit: '500mb' }), (req, res) => {
+  const filename = req.headers['x-filename'];
+  if (!filename || !/^[A-Za-z0-9._-]+$/.test(String(filename))) {
+    return res.status(400).json({ error: 'bad X-Filename header' });
+  }
+  const fp = path.join(FW_RELEASES_DIR, String(filename));
+  fs.writeFileSync(fp, req.body);
+  res.json({ ok: true, saved: filename, size: req.body.length });
+});
+
+app.get('/api/admin/updates/fleet-worker/versions', requireAdmin, (req, res) => {
+  try {
+    let latest = null;
+    const latestPath = path.join(FW_RELEASES_DIR, 'latest.json');
+    if (fs.existsSync(latestPath)) {
+      latest = JSON.parse(fs.readFileSync(latestPath, 'utf8'));
+    }
+    const files = fs.readdirSync(FW_RELEASES_DIR)
+      .filter(name => name !== 'latest.json')
+      .map(name => {
+        const stat = fs.statSync(path.join(FW_RELEASES_DIR, name));
+        return { name, size: stat.size, mtime: stat.mtime.toISOString() };
+      })
+      .sort((a, b) => b.mtime.localeCompare(a.mtime));
+    res.json({ latest, files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/updates/fleet-worker/download/:file', requireAdmin, (req, res) => {
+  const name = path.basename(req.params.file);
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
+  const fp = path.join(FW_RELEASES_DIR, name);
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
+  res.sendFile(path.resolve(fp));
+});
+
+app.post('/api/admin/updates/fleet-worker/publish', requireAdmin, (req, res) => {
+  const { version, notes = '', assets = {} } = req.body || {};
+  if (!version || typeof assets !== 'object') return res.status(400).json({ error: 'version + assets required' });
+  const meta = { version, notes, assets, published_at: now() };
+  fs.writeFileSync(path.join(FW_RELEASES_DIR, 'latest.json'), JSON.stringify(meta, null, 2));
+  res.json({ ok: true, meta });
+});
+
+// ==================== PUBLIC DOWNLOADS (no auth) ====================
+function listReleases(dir) {
+  let latest = null;
+  const latestPath = path.join(dir, 'latest.json');
+  if (fs.existsSync(latestPath)) {
+    latest = JSON.parse(fs.readFileSync(latestPath, 'utf8'));
+  }
+  const files = fs.readdirSync(dir)
+    .filter(name => name !== 'latest.json')
+    .map(name => {
+      const stat = fs.statSync(path.join(dir, name));
+      return { name, size: stat.size, mtime: stat.mtime.toISOString() };
+    })
+    .sort((a, b) => b.mtime.localeCompare(a.mtime));
+  return { latest, files };
+}
+
+app.get('/api/downloads/versions', (req, res) => {
+  try {
+    res.json(listReleases(RELEASES_DIR));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/downloads/fleet-worker/versions', (req, res) => {
+  try {
+    res.json(listReleases(FW_RELEASES_DIR));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/downloads/download/:file', (req, res) => {
+  const name = path.basename(req.params.file);
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
+  const fp = path.join(RELEASES_DIR, name);
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
+  res.sendFile(path.resolve(fp));
+});
+
+app.get('/api/downloads/fleet-worker/download/:file', (req, res) => {
+  const name = path.basename(req.params.file);
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
+  const fp = path.join(FW_RELEASES_DIR, name);
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
+  res.sendFile(path.resolve(fp));
 });
 
 // ==================== STATIC ====================
