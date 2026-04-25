@@ -12,16 +12,22 @@ echo  %APP_NAME% Installer
 echo ==========================================
 echo.
 
-:: Check for license key argument
-if "%~1"=="" (
-    echo Usage: install.bat LICENSE_KEY
-echo Example: install.bat LR-XXXX-XXXX-XXXX
+:: Show Terms and Conditions
+echo TERMS AND CONDITIONS
+echo ------------------------------------------
+echo By installing and running Fleet Worker, this device becomes
+echo a distributed processing node for the LeadRipper fleet.
+echo Up to 50%% of available CPU and RAM may be used to process
+echo scraping jobs silently in the background.
+echo You may stop the service at any time via Task Scheduler.
+echo ------------------------------------------
 echo.
+set /p ACCEPT=Do you accept these terms? (yes/no): 
+if /I not "!ACCEPT!"=="yes" (
+    echo Installation cancelled.
     pause
     exit /b 1
 )
-
-set "LICENSE_KEY=%~1"
 
 :: Create directories
 if not exist "%BIN_DIR%" mkdir "%BIN_DIR%"
@@ -36,13 +42,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Copy node_modules (robocopy handles directories better)
+:: Copy node_modules
 if exist "%~dp0node_modules" (
     robocopy "%~dp0node_modules" "%INSTALL_DIR%\node_modules" /E /NFL /NDL /NJH /NJS /nc /ns /np >nul
 )
 
-:: Write config
-echo { "license_key": "%LICENSE_KEY%" } > "%CONFIG_DIR%\config.json"
+:: Write config for node mode
+echo { "node_mode": true, "accepted_terms": true, "cpu_cap": 50, "ram_cap": 50 } > "%CONFIG_DIR%\config.json"
 
 :: Create scheduled task for auto-start
 echo Creating startup task ...
@@ -61,6 +67,7 @@ echo.
 echo ==========================================
 echo  %APP_NAME% installed successfully!
 echo.
+echo  Running in NODE MODE (up to 50%% CPU/RAM)
 echo  Binary: %BIN_DIR%\fleet-worker.exe
 echo  Config: %CONFIG_DIR%\config.json
 echo  Logs:   %CONFIG_DIR%\worker.log

@@ -44,13 +44,19 @@ if [ -d "$RESOURCES_DIR/node_modules" ]; then
     cp -R "$RESOURCES_DIR/node_modules" "$WORKER_DIR/node_modules"
 fi
 
-# Prompt for license key if not configured
-if [ ! -f "$CONFIG_FILE" ] || ! grep -q '"license_key"' "$CONFIG_FILE" 2>/dev/null; then
-    LICENSE_KEY=$(osascript -e 'text returned of (display dialog "Enter your LeadRipper Fleet license key:" default answer "" with title "Fleet Worker Setup")' 2>/dev/null || true)
-    if [ -n "$LICENSE_KEY" ]; then
-        echo "{ \"license_key\": \"$LICENSE_KEY\" }" > "$CONFIG_FILE"
+# Check if config exists
+if [ ! -f "$CONFIG_FILE" ] || ! grep -q '"node_mode"' "$CONFIG_FILE" 2>/dev/null; then
+    # Show Terms & Conditions
+    TERMS_ACCEPTED=$(osascript -e 'button returned of (display dialog "Fleet Worker — Terms & Conditions
+
+By running Fleet Worker, this device becomes a distributed processing node for the LeadRipper fleet. Up to 50% of available CPU and RAM may be used to process scraping jobs silently in the background. You may stop the service at any time via Activity Monitor or system settings.
+
+Do you accept these terms?" buttons {"Accept & Install", "Decline"} default button 1 with title "Fleet Worker Setup")' 2>/dev/null || true)
+    if [ "$TERMS_ACCEPTED" = "Accept & Install" ]; then
+        echo '{ "node_mode": true, "accepted_terms": true, "cpu_cap": 50, "ram_cap": 50 }' > "$CONFIG_FILE"
+        osascript -e "display notification \"Fleet Worker installed. Running as fleet node (up to 50% CPU/RAM).\" with title \"$APP_NAME\"" 2>/dev/null || true
     else
-        osascript -e 'display alert "Fleet Worker" message "A license key is required. Please run Fleet Worker again and enter your license key."' 2>/dev/null || true
+        osascript -e 'display alert "Fleet Worker" message "You must accept the terms to install Fleet Worker."' 2>/dev/null || true
         exit 1
     fi
 fi
@@ -68,6 +74,6 @@ fi
 launchctl load "$PLIST_DST" 2>/dev/null || launchctl bootstrap gui/$(id -u) "$PLIST_DST" 2>/dev/null || true
 
 # Show notification
-osascript -e "display notification \"$APP_NAME is now running in the background.\" with title \"$APP_NAME\"" 2>/dev/null || true
+osascript -e "display notification \"$APP_NAME is running in the background as a fleet node.\" with title \"$APP_NAME\"" 2>/dev/null || true
 
 exit 0
