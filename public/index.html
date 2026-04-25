@@ -188,6 +188,7 @@
   <div class="tab" data-view="ghl" onclick="showView('ghl')">GHL Sync</div>
   <div class="tab" data-view="ai" onclick="showView('ai')">AI Assistant</div>
   <div class="tab" data-view="import" onclick="showView('import')">Import</div>
+  <div class="tab" data-view="downloads" onclick="showView('downloads')">Downloads</div>
 </div>
 
 <main>
@@ -303,6 +304,7 @@ async function loadCurrent() {
     else if (currentView === 'ghl') await renderGhl();
     else if (currentView === 'ai') await renderAi();
     else if (currentView === 'import') await renderImport();
+    else if (currentView === 'downloads') await renderDownloads();
   } catch (e) {
     $('app').innerHTML = `<div class="unauth">Error: ${e.message}. Check token.</div>`;
   }
@@ -1550,6 +1552,59 @@ async function runImport() {
     } catch (e) { alert('Export failed: ' + e.message); }
   };
 })();
+
+async function renderDownloads() {
+  $('app').innerHTML = `<div class="panel"><div class="panel-header"><h2>Software Downloads</h2></div><div class="panel-body" id="downloads-body"><span class="muted">Loading...</span></div></div>`;
+  try {
+    const data = await api('/api/admin/updates/versions');
+    const latest = data.latest || {};
+    const files = data.files || [];
+    if (!files.length) {
+      $('downloads-body').innerHTML = '<span class="muted">No releases found.</span>';
+      return;
+    }
+    const latestAssets = new Set(Object.values(latest.assets || {}));
+    const rows = files.map(f => {
+      const isLatest = latestAssets.has(f.name) || f.name === 'latest.json';
+      return `
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><code>${esc(f.name)}</code>${isLatest ? ' <span style="color:var(--green);font-size:10px;font-weight:700">LATEST</span>' : ''}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${fmtBytes(f.size)}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">${f.mtime ? new Date(f.mtime).toLocaleString() : '—'}</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">
+            <a class="btn" href="/api/admin/updates/download/${encodeURIComponent(f.name)}?token=${encodeURIComponent(token)}" download style="padding:4px 10px;font-size:11px">Download</a>
+          </td>
+        </tr>
+      `;
+    }).join('');
+    $('downloads-body').innerHTML = `
+      ${latest.version ? `<div style="margin-bottom:14px;padding:10px 12px;background:rgba(61,220,132,.08);border:1px solid rgba(61,220,132,.2);border-radius:4px">
+        <strong style="color:var(--green)">Latest published version:</strong> <code>${esc(latest.version)}</code>
+        ${latest.notes ? `<div class="muted" style="margin-top:4px">${esc(latest.notes)}</div>` : ''}
+      </div>` : ''}
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead>
+          <tr style="text-align:left;color:var(--cyan)">
+            <th style="padding:8px 10px;border-bottom:1px solid var(--border)">File</th>
+            <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Size</th>
+            <th style="padding:8px 10px;border-bottom:1px solid var(--border)">Modified</th>
+            <th style="padding:8px 10px;border-bottom:1px solid var(--border);text-align:right">Action</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  } catch (e) {
+    $('downloads-body').innerHTML = `<span class="muted">Error: ${esc(e.message)}</span>`;
+  }
+}
+function fmtBytes(b) {
+  if (b == null) return '—';
+  const units = ['B','KB','MB','GB'];
+  let i = 0, size = +b;
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+  return `${size.toFixed(2)} ${units[i]}`;
+}
 
 loadCurrent();
 // Auto-refresh the main Fleet / Jobs views, but skip the tick if the user is

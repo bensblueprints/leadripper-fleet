@@ -917,6 +917,34 @@ app.post('/api/admin/updates/upload', requireAdmin, express.raw({ type: '*/*', l
   res.json({ ok: true, saved: filename, size: req.body.length });
 });
 
+app.get('/api/admin/updates/versions', requireAdmin, (req, res) => {
+  try {
+    let latest = null;
+    const latestPath = path.join(RELEASES_DIR, 'latest.json');
+    if (fs.existsSync(latestPath)) {
+      latest = JSON.parse(fs.readFileSync(latestPath, 'utf8'));
+    }
+    const files = fs.readdirSync(RELEASES_DIR)
+      .filter(name => name !== 'latest.json')
+      .map(name => {
+        const stat = fs.statSync(path.join(RELEASES_DIR, name));
+        return { name, size: stat.size, mtime: stat.mtime.toISOString() };
+      })
+      .sort((a, b) => b.mtime.localeCompare(a.mtime));
+    res.json({ latest, files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/updates/download/:file', requireAdmin, (req, res) => {
+  const name = path.basename(req.params.file);
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
+  const fp = path.join(RELEASES_DIR, name);
+  if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
+  res.sendFile(fp);
+});
+
 app.post('/api/admin/updates/publish', requireAdmin, (req, res) => {
   const { version, notes = '', assets = {} } = req.body || {};
   if (!version || typeof assets !== 'object') return res.status(400).json({ error: 'version + assets required' });
