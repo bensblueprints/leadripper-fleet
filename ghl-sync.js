@@ -134,6 +134,45 @@ async function updateContact(apiKey, id, payload) {
   }, 'update');
 }
 
+function buildWhere(filter, onlyUnsynced) {
+  const where = [`phone IS NOT NULL`, `phone != ''`];
+  const params = [];
+  if (onlyUnsynced) where.push(`(ghl_synced IS NULL OR ghl_synced = 0)`);
+  if (filter?.industry) { where.push(`industry = ?`); params.push(filter.industry); }
+  if (filter?.state)    { where.push(`state = ?`);    params.push(filter.state); }
+  if (filter?.city)     { where.push(`city = ?`);     params.push(filter.city); }
+  if (filter?.tags) {
+    // tags column is JSON array text; use LIKE for simple tag matching
+    where.push(`tags LIKE ?`);
+    params.push(`%"${filter.tags.replace(/"/g, '')}"%`);
+  }
+  if (filter?.tagsAll && Array.isArray(filter.tagsAll)) {
+    for (const t of filter.tagsAll) {
+      where.push(`tags LIKE ?`);
+      params.push(`%"${String(t).replace(/"/g, '')}"%`);
+    }
+  }
+  if (filter?.q) {
+    where.push(`(name LIKE ? OR phone LIKE ? OR email LIKE ? OR website LIKE ? OR address LIKE ?)`);
+    const q = `%${filter.q}%`;
+    params.push(q, q, q, q, q);
+  }
+  return { whereClause: where.join(' AND '), params };
+}
+
+function countLeads(db, filter, onlyUnsynced) {
+  const { whereClause, params } = buildWhere(filter, onlyUnsynced);
+  const row = db.prepare(`SELECT COUNT(*) AS c FROM leads WHERE ${whereClause}`).get(...params);
+  return row?.c || 0;
+}
+
+function pickLeadsBatch(db, { filter, onlyUnsynced = true, offset = 0, batchSize = 1000 }) {
+  const { whereClause, params } = buildWhere(filter, onlyUnsynced);
+  return db.prepare(
+    `SELECT * FROM leads WHERE ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`
+  ).all(...params, batchSize, offset);
+}
+
 function pickLeads(db, { leadIds, filter, onlyUnsynced = true }) {
   if (Array.isArray(leadIds) && leadIds.length) {
     const placeholders = leadIds.map(() => '?').join(',');
@@ -141,21 +180,8 @@ function pickLeads(db, { leadIds, filter, onlyUnsynced = true }) {
       `SELECT * FROM leads WHERE id IN (${placeholders}) AND phone IS NOT NULL AND phone != ''`
     ).all(...leadIds);
   }
-  const where = [`phone IS NOT NULL`, `phone != ''`];
-  const params = [];
-  if (onlyUnsynced) where.push(`(ghl_synced IS NULL OR ghl_synced = 0)`);
-  if (filter?.industry) { where.push(`industry = ?`); params.push(filter.industry); }
-  if (filter?.state)    { where.push(`state = ?`);    params.push(filter.state); }
-  if (filter?.city)     { where.push(`city = ?`);     params.push(filter.city); }
-  if (filter?.q) {
-    where.push(`(name LIKE ? OR phone LIKE ? OR email LIKE ? OR website LIKE ? OR address LIKE ?)`);
-    const q = `%${filter.q}%`;
-    params.push(q, q, q, q, q);
-  }
-  const limit = Math.min(+filter?.limit || 100000, 1000000);
-  return db.prepare(
-    `SELECT * FROM leads WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ?`
-  ).all(...params, limit);
+  // For single-batch queries (backward compat), return first batch only
+  return pickLeadsBatch(db, { filter, onlyUnsynced, offset: 0, batchSize: 1000 });
 }
 
 function markSynced(db, leadId, contactId) {
@@ -169,8 +195,8 @@ async function runSync(db, opts = {}) {
   const { apiKey, locationId } = getCreds(db);
   if (!apiKey || !locationId) throw new Error('GHL credentials not configured');
 
-  const leads = pickLeads(db, opts);
-  if (!leads.length) {
+  const totalLeads = countLeads(db, opts.filter, opts.onlyUnsynced !== false);
+  if (!totalLeads) {
     appendLog(`no leads match — nothing to sync`);
     return { ok: true, total: 0 };
   }
@@ -178,56 +204,68 @@ async function runSync(db, opts = {}) {
   Object.assign(state, {
     running: true, cancel: false,
     started_at: Math.floor(Date.now() / 1000), finished_at: 0,
-    total: leads.length, done: 0, created: 0, updated: 0, errors: 0, skipped: 0,
+    total: totalLeads, done: 0, created: 0, updated: 0, errors: 0, skipped: 0,
     current: '', last_error: '', last_log: [],
     trigger: opts.trigger || 'manual',
   });
-  appendLog(`starting sync of ${leads.length} leads (trigger=${state.trigger})`);
+  appendLog(`starting sync of ${totalLeads} leads in batches of 1000 (trigger=${state.trigger})`);
 
   (async () => {
-    for (const lead of leads) {
+    const BATCH_SIZE = 1000;
+    let offset = 0;
+    while (offset < totalLeads) {
       if (state.cancel) { appendLog('cancelled by admin'); break; }
-      state.current = lead.name || lead.phone || ('#' + lead.id);
-      try {
-        const payload = buildContactPayload(lead, locationId);
-        let existingId = null;
-        try { existingId = await lookupByPhone(apiKey, locationId, lead.phone); } catch {}
-        if (existingId) {
-          const r = await updateContact(apiKey, existingId, payload);
-          if (r.ok) {
-            state.updated++;
-            markSynced(db, lead.id, existingId);
-            appendLog(`updated: ${state.current}`);
+      const batch = pickLeadsBatch(db, { filter: opts.filter, onlyUnsynced: opts.onlyUnsynced !== false, offset, batchSize: BATCH_SIZE });
+      if (!batch.length) break;
+
+      for (const lead of batch) {
+        if (state.cancel) { appendLog('cancelled by admin'); break; }
+        state.current = lead.name || lead.phone || ('#' + lead.id);
+        try {
+          const payload = buildContactPayload(lead, locationId);
+          let existingId = null;
+          try { existingId = await lookupByPhone(apiKey, locationId, lead.phone); } catch {}
+          if (existingId) {
+            const r = await updateContact(apiKey, existingId, payload);
+            if (r.ok) {
+              state.updated++;
+              markSynced(db, lead.id, existingId);
+              appendLog(`updated: ${state.current}`);
+            } else {
+              state.errors++;
+              state.last_error = r.body?.message || ('HTTP ' + r.status);
+              appendLog(`error updating ${state.current}: ${state.last_error}`);
+            }
           } else {
-            state.errors++;
-            state.last_error = r.body?.message || ('HTTP ' + r.status);
-            appendLog(`error updating ${state.current}: ${state.last_error}`);
+            const r = await createContact(apiKey, payload);
+            if (r.ok) {
+              state.created++;
+              markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
+              appendLog(`created: ${state.current}`);
+            } else if (r.status === 422) {
+              // "duplicate contact" — try to extract existing contact ID from various response shapes
+              state.updated++;
+              const dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
+              markSynced(db, lead.id, dupeId);
+              appendLog(`dupe: ${state.current} (id=${dupeId || 'unknown'})`);
+            } else {
+              state.errors++;
+              state.last_error = r.body?.message || ('HTTP ' + r.status);
+              appendLog(`error creating ${state.current}: ${state.last_error}`);
+            }
           }
-        } else {
-          const r = await createContact(apiKey, payload);
-          if (r.ok) {
-            state.created++;
-            markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
-            appendLog(`created: ${state.current}`);
-          } else if (r.status === 422) {
-            // "duplicate contact" — try to extract existing contact ID from various response shapes
-            state.updated++;
-            const dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
-            markSynced(db, lead.id, dupeId);
-            appendLog(`dupe: ${state.current} (id=${dupeId || 'unknown'})`);
-          } else {
-            state.errors++;
-            state.last_error = r.body?.message || ('HTTP ' + r.status);
-            appendLog(`error creating ${state.current}: ${state.last_error}`);
-          }
+        } catch (e) {
+          state.errors++;
+          state.last_error = e.message;
+          appendLog(`exception ${state.current}: ${e.message}`);
         }
-      } catch (e) {
-        state.errors++;
-        state.last_error = e.message;
-        appendLog(`exception ${state.current}: ${e.message}`);
+        state.done++;
+        await new Promise(r => setTimeout(r, GAP_MS));
       }
-      state.done++;
-      await new Promise(r => setTimeout(r, GAP_MS));
+      offset += BATCH_SIZE;
+      if (!state.cancel && offset < totalLeads) {
+        appendLog(`batch complete — ${state.done} / ${totalLeads} processed`);
+      }
     }
     state.running = false;
     state.finished_at = Math.floor(Date.now() / 1000);
@@ -239,7 +277,7 @@ async function runSync(db, opts = {}) {
     appendLog(`fatal: ${e.message}`);
   });
 
-  return { ok: true, total: leads.length };
+  return { ok: true, total: totalLeads };
 }
 
 function cancel() { if (state.running) state.cancel = true; }

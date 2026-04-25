@@ -52,10 +52,12 @@ function requireAdmin(req, res, next) {
 function requireWorker(req, res, next) {
   const key = req.headers['x-license-key'] || req.body?.license_key;
   const machineId = req.headers['x-machine-id'] || req.body?.machine_id;
-  if (!validLicense(key)) return res.status(401).json({ error: 'invalid license' });
+  const nodeMode = req.headers['x-node-mode'] === '1' || req.body?.node_mode === 1;
+  if (!validLicense(key) && !nodeMode) return res.status(401).json({ error: 'invalid license' });
   if (!machineId) return res.status(400).json({ error: 'missing machine_id' });
-  req.licenseKey = key;
+  req.licenseKey = key || '';
   req.machineId = machineId;
+  req.nodeMode = nodeMode;
   next();
 }
 
@@ -72,12 +74,13 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
   if (!node) {
     db.prepare(`
       INSERT INTO nodes (machine_id, license_key, hostname, label, os, app_version,
-        cpu_pct, ram_pct, cpu_cap, ram_cap, status, last_seen, first_seen)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)
+        cpu_pct, ram_pct, cpu_cap, ram_cap, status, last_seen, first_seen, node_mode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?)
     `).run(
       req.machineId, req.licenseKey, hostname || null, label || hostname || null,
       os || null, app_version || null,
-      cpu_pct ?? 0, ram_pct ?? 0, cpu_cap ?? 50, ram_cap ?? 50, t, t
+      cpu_pct ?? 0, ram_pct ?? 0, cpu_cap ?? 50, ram_cap ?? 50, t, t,
+      req.nodeMode ? 1 : 0
     );
     node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
   } else {
@@ -92,6 +95,7 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
           current_job_leads = ?,
           current_job_industry = ?,
           current_job_city = ?,
+          node_mode = COALESCE(?, node_mode),
           status = CASE WHEN paused = 1 THEN 'paused'
                         WHEN current_job_id IS NOT NULL THEN 'working'
                         ELSE 'idle' END,
@@ -103,6 +107,7 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
       +(current_job_leads||0),
       current_job_industry || null,
       current_job_city || null,
+      req.nodeMode ? 1 : 0,
       t, node.id);
   }
 
@@ -122,6 +127,7 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
     paused: !!node.paused,
     cpu_cap: node.cpu_cap,
     ram_cap: node.ram_cap,
+    node_mode: !!node.node_mode,
     commands: cmds.map(c => ({ id: c.id, kind: c.kind, payload: c.payload ? JSON.parse(c.payload) : null }))
   });
 });
@@ -844,6 +850,27 @@ app.post('/api/admin/ghl/reset-sync', requireAdmin, (req, res) => {
   const ids = Array.isArray(req.body?.leadIds) ? req.body.leadIds.map(Number).filter(Boolean) : [];
   const changed = ghlSync.bulkResetSync(db, ids);
   res.json({ ok: true, changed });
+});
+
+// Leads metadata for dropdown filters
+app.get('/api/admin/leads/meta', requireAdmin, (req, res) => {
+  try {
+    const industries = db.prepare(`SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' ORDER BY industry ASC`).all().map(r => r.industry);
+    const states = db.prepare(`SELECT DISTINCT state FROM leads WHERE state IS NOT NULL AND state != '' ORDER BY state ASC`).all().map(r => r.state);
+    const cities = db.prepare(`SELECT DISTINCT city FROM leads WHERE city IS NOT NULL AND city != '' ORDER BY city ASC LIMIT 5000`).all().map(r => r.city);
+    // Extract unique tags from JSON arrays
+    const tagRows = db.prepare(`SELECT DISTINCT tags FROM leads WHERE tags IS NOT NULL AND tags != '' AND tags != '[]' LIMIT 10000`).all();
+    const tagSet = new Set();
+    for (const row of tagRows) {
+      try {
+        const arr = JSON.parse(row.tags);
+        if (Array.isArray(arr)) for (const t of arr) if (t) tagSet.add(t);
+      } catch {}
+    }
+    res.json({ industries, states, cities, tags: Array.from(tagSet).sort() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ==================== AI ASSISTANT ====================

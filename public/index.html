@@ -1205,21 +1205,28 @@ async function renderGhl() {
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-header"><h2>Sync</h2></div>
       <div class="panel-body" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
-        <div style="width:200px">
-          <label>Industry filter (optional)</label>
-          <input id="ghl-f-industry" placeholder="e.g. Plumber">
+        <div style="width:180px">
+          <label>Industry</label>
+          <select id="ghl-f-industry"><option value="">All industries</option></select>
         </div>
-        <div style="width:100px">
+        <div style="width:90px">
           <label>State</label>
-          <input id="ghl-f-state" placeholder="FL">
-        </div>
-        <div style="width:160px">
-          <label>City</label>
-          <input id="ghl-f-city" placeholder="Miami">
+          <select id="ghl-f-state"><option value="">All states</option></select>
         </div>
         <div style="width:140px">
-          <label>Limit</label>
-          <input id="ghl-f-limit" value="1000" type="number" min="1" max="1000000">
+          <label>City</label>
+          <select id="ghl-f-city"><option value="">All cities</option></select>
+        </div>
+        <div style="width:140px">
+          <label>Tag</label>
+          <select id="ghl-f-tag"><option value="">Any tag</option></select>
+        </div>
+        <div style="width:160px">
+          <label>Advanced: has ALL tags</label>
+          <input id="ghl-f-tags-all" placeholder="tag1, tag2">
+        </div>
+        <div style="width:100%">
+          <span class="muted" style="font-size:11px">Syncs ALL matching leads in batches of 1000. No limit.</span>
         </div>
         <button id="ghl-btn-start" class="primary" onclick="startGhlSync()">▶ Start sync (unsynced only)</button>
         <button id="ghl-btn-all" onclick="startGhlSyncAll()">Sync ALL matching (even synced)</button>
@@ -1227,6 +1234,18 @@ async function renderGhl() {
       </div>
     </div>
   `;
+  // Populate dropdowns
+  try {
+    const meta = await api('/api/admin/leads/meta');
+    const selInd = $('ghl-f-industry');
+    const selSta = $('ghl-f-state');
+    const selCit = $('ghl-f-city');
+    const selTag = $('ghl-f-tag');
+    if (meta.industries) for (const i of meta.industries) { const o=document.createElement('option'); o.value=i; o.textContent=i; selInd.appendChild(o); }
+    if (meta.states) for (const s of meta.states) { const o=document.createElement('option'); o.value=s; o.textContent=s; selSta.appendChild(o); }
+    if (meta.cities) for (const c of meta.cities) { const o=document.createElement('option'); o.value=c; o.textContent=c; selCit.appendChild(o); }
+    if (meta.tags) for (const t of meta.tags) { const o=document.createElement('option'); o.value=t; o.textContent=t; selTag.appendChild(o); }
+  } catch {}
   await refreshGhlDynamic();
   startGhlPoll();
 }
@@ -1289,11 +1308,14 @@ async function clearGhlConfig() {
   renderGhl();
 }
 function ghlBuildFilter() {
+  const tagsAllRaw = $('ghl-f-tags-all').value.trim();
+  const tagsAll = tagsAllRaw ? tagsAllRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined;
   return {
     industry: $('ghl-f-industry').value.trim() || undefined,
     state: $('ghl-f-state').value.trim() || undefined,
     city: $('ghl-f-city').value.trim() || undefined,
-    limit: +$('ghl-f-limit').value || 1000,
+    tags: $('ghl-f-tag').value.trim() || undefined,
+    tagsAll,
   };
 }
 async function startGhlSync() {
