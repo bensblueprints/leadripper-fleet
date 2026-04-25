@@ -588,12 +588,14 @@ function initIndustryPicker(inputId, dropdownId, onPick) {
     q = (q || '').trim().toLowerCase();
     if (!q) {
       matches = [...INDUSTRIES].sort((a, b) => a.name.localeCompare(b.name));
-      dropdown.innerHTML = matches.map((m, idx) => `
+      const showAll = matches.slice(0, 150);
+      const remaining = matches.length - showAll.length;
+      dropdown.innerHTML = showAll.map((m, idx) => `
         <div class="picker-item ${idx===active?'active':''}" onclick="window['_pickIndustry_${inputId}']('${esc(m.name)}','${esc(m.gcid)}')">
           ${esc(m.name)}
           <span class="gcid">${esc(m.gcid)}</span>
         </div>
-      `).join('');
+      `).join('') + (remaining > 0 ? `<div class="picker-item muted" style="cursor:default">${remaining.toLocaleString()} more — type to filter</div>` : '');
       dropdown.style.maxHeight = '320px';
       dropdown.style.overflowY = 'auto';
       dropdown.hidden = false;
