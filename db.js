@@ -222,11 +222,21 @@ setInterval(() => {
 }, 60000);
 
 // Sweep stale nodes on startup — any node not seen in 90s is offline
-const stmtMarkOffline = db.prepare(`
-  UPDATE nodes SET status='offline' WHERE last_seen < ? AND status != 'offline'
-`);
-setInterval(() => {
-  try { stmtMarkOffline.run(Math.floor(Date.now() / 1000) - 90); } catch (e) {}
-}, 15000);
+// Also free any jobs they were holding so other workers can pick them up.
+function sweepStaleNodes() {
+  const t = Math.floor(Date.now() / 1000) - 90;
+  const tx = db.transaction(() => {
+    const stale = db.prepare(`SELECT id, current_job_id FROM nodes WHERE last_seen < ? AND status != 'offline'`).all(t);
+    for (const n of stale) {
+      if (n.current_job_id) {
+        db.prepare(`UPDATE jobs SET status='queued', assigned_node_id=NULL, started_at=NULL WHERE id=? AND status='running'`).run(n.current_job_id);
+      }
+      db.prepare(`UPDATE nodes SET status='offline', current_job_id=NULL WHERE id=?`).run(n.id);
+    }
+  });
+  try { tx(); } catch (e) {}
+}
+setInterval(sweepStaleNodes, 15000);
+sweepStaleNodes(); // run once on boot
 
 module.exports = db;

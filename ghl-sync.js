@@ -11,6 +11,8 @@
 const GHL_BASE = 'https://services.leadconnectorhq.com';
 const GHL_VERSION = '2021-07-28';
 const GAP_MS = 250; // ~4 req/sec, GHL allows 10
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
 
 const state = {
   running: false,
@@ -80,32 +82,56 @@ function buildContactPayload(lead, locationId) {
   return p;
 }
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function withRetry(fn, label) {
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    try {
+      const r = await fn();
+      return r;
+    } catch (e) {
+      const isTransient = e.message.includes('network') || e.message.includes('timeout') || e.message.includes('ECONNRESET') || e.message.includes('ETIMEDOUT');
+      if (!isTransient && i === 0) throw e; // non-transient errors fail immediately
+      if (i === MAX_RETRIES - 1) throw e;
+      console.log(`[ghl-sync] retry ${label} (${i + 1}/${MAX_RETRIES}): ${e.message}`);
+      await sleep(RETRY_DELAY_MS * (i + 1));
+    }
+  }
+}
+
 async function lookupByPhone(apiKey, locationId, phone) {
-  const url = `${GHL_BASE}/contacts/lookup?locationId=${encodeURIComponent(locationId)}&phone=${encodeURIComponent(phone)}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}`, Version: GHL_VERSION } });
-  if (!r.ok) return null;
-  const d = await r.json().catch(() => ({}));
-  return d?.contacts?.[0]?.id || null;
+  return withRetry(async () => {
+    const url = `${GHL_BASE}/contacts/lookup?locationId=${encodeURIComponent(locationId)}&phone=${encodeURIComponent(phone)}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}`, Version: GHL_VERSION } });
+    if (r.status === 404) return null; // genuinely not found
+    if (!r.ok) throw new Error(`lookup HTTP ${r.status}`);
+    const d = await r.json().catch(() => ({}));
+    return d?.contacts?.[0]?.id || null;
+  }, 'lookup');
 }
 
 async function createContact(apiKey, payload) {
-  const r = await fetch(`${GHL_BASE}/contacts/`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Version: GHL_VERSION },
-    body: JSON.stringify(payload),
-  });
-  const body = await r.json().catch(() => ({}));
-  return { ok: r.ok, status: r.status, body };
+  return withRetry(async () => {
+    const r = await fetch(`${GHL_BASE}/contacts/`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Version: GHL_VERSION },
+      body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, body };
+  }, 'create');
 }
 
 async function updateContact(apiKey, id, payload) {
-  const r = await fetch(`${GHL_BASE}/contacts/${id}`, {
-    method: 'PUT',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Version: GHL_VERSION },
-    body: JSON.stringify(payload),
-  });
-  const body = await r.json().catch(() => ({}));
-  return { ok: r.ok, status: r.status, body };
+  return withRetry(async () => {
+    const r = await fetch(`${GHL_BASE}/contacts/${id}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', Version: GHL_VERSION },
+      body: JSON.stringify(payload),
+    });
+    const body = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, body };
+  }, 'update');
 }
 
 function pickLeads(db, { leadIds, filter, onlyUnsynced = true }) {
@@ -184,10 +210,11 @@ async function runSync(db, opts = {}) {
             markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
             appendLog(`created: ${state.current}`);
           } else if (r.status === 422) {
-            // "duplicate contact" — mark synced so we skip next time
+            // "duplicate contact" — try to extract existing contact ID from various response shapes
             state.updated++;
-            markSynced(db, lead.id, r.body?.meta?.contactId || '');
-            appendLog(`dupe: ${state.current}`);
+            const dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
+            markSynced(db, lead.id, dupeId);
+            appendLog(`dupe: ${state.current} (id=${dupeId || 'unknown'})`);
           } else {
             state.errors++;
             state.last_error = r.body?.message || ('HTTP ' + r.status);

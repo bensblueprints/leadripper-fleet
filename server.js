@@ -774,6 +774,31 @@ try {
   if (r.inserted > 0) console.log(`[mass-scrape boot] seeded ${r.inserted} rows`);
 } catch (e) { console.error('[mass-scrape boot] seed error:', e.message); }
 
+// ==================== JOB TIMEOUT SWEEPER ====================
+// Jobs that have been running for >10 minutes without finishing are assumed
+// stuck (crashed worker, network issue, etc.). Reset to queued so another
+// worker can pick them up.
+const JOB_TIMEOUT_SECONDS = 600;
+setInterval(() => {
+  try {
+    const cutoff = now() - JOB_TIMEOUT_SECONDS;
+    const tx = db.transaction(() => {
+      const stuck = db.prepare(`
+        SELECT j.id, j.assigned_node_id
+        FROM jobs j
+        JOIN nodes n ON n.id = j.assigned_node_id
+        WHERE j.status = 'running' AND j.started_at < ?
+      `).all(cutoff);
+      for (const row of stuck) {
+        db.prepare(`UPDATE jobs SET status='queued', assigned_node_id=NULL, started_at=NULL WHERE id=?`).run(row.id);
+        db.prepare(`UPDATE nodes SET current_job_id=NULL, status='idle' WHERE id=? AND current_job_id=?`).run(row.assigned_node_id, row.id);
+        console.log(`[job-timeout] reset stuck job ${row.id} (node ${row.assigned_node_id})`);
+      }
+    });
+    tx();
+  } catch (e) { console.error('[job-timeout] sweeper error:', e.message); }
+}, 60000);
+
 // ==================== GHL SYNC ====================
 
 app.get('/api/admin/ghl/config', requireAdmin, (req, res) => {
