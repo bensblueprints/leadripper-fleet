@@ -1,6 +1,6 @@
 {
   "name": "leadripper-fleet",
-  "version": "1.5.0",
+  "version": "10.1.1",
   "description": "LeadRipper fleet control server — dispatches scrape jobs to owned worker nodes",
   "main": "server.js",
   "scripts": {

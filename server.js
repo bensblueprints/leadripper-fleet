@@ -14,50 +14,23 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_TOKEN = 'JEsus777$$!';
-
-// Load license hashes from bundled file + optional env override
-let LICENSE_HASHES = [];
-try {
-  const bundled = JSON.parse(fs.readFileSync(path.join(__dirname, 'license-hashes.json'), 'utf8'));
-  if (Array.isArray(bundled)) LICENSE_HASHES = LICENSE_HASHES.concat(bundled);
-} catch (e) { console.warn('[fleet] no bundled license-hashes.json'); }
-if (process.env.LICENSE_HASHES) {
-  LICENSE_HASHES = LICENSE_HASHES.concat(
-    process.env.LICENSE_HASHES.split(',').map(s => s.trim()).filter(Boolean)
-  );
-}
-LICENSE_HASHES = [...new Set(LICENSE_HASHES)];
+const ADMIN_PASSWORD = 'JEsusCHrist';
 
 function now() { return Math.floor(Date.now() / 1000); }
 
-function hashLicense(key) {
-  return crypto.createHash('sha256').update(String(key).trim()).digest('hex');
-}
-
-function validLicense(key) {
-  if (!key) return false;
-  if (LICENSE_HASHES.length === 0) return true; // open mode during setup
-  return LICENSE_HASHES.includes(hashLicense(key));
-}
-
 // ---- admin auth middleware ----
 function requireAdmin(req, res, next) {
-  const token = req.headers['x-admin-token'] || req.query.token;
-  if (token !== ADMIN_TOKEN) return res.status(401).json({ error: 'unauthorized' });
+  const auth = req.headers['x-admin-token'] || req.headers['x-password'] || req.query.token || req.query.password;
+  if (auth !== ADMIN_PASSWORD) return res.status(401).json({ error: 'unauthorized' });
   next();
 }
 
 // ---- worker auth middleware ----
+// No license required — any machine can join the fleet. Just need machine_id for tracking.
 function requireWorker(req, res, next) {
-  const key = req.headers['x-license-key'] || req.body?.license_key;
   const machineId = req.headers['x-machine-id'] || req.body?.machine_id;
-  const nodeMode = req.headers['x-node-mode'] === '1' || req.body?.node_mode === 1;
-  if (!validLicense(key) && !nodeMode) return res.status(401).json({ error: 'invalid license' });
   if (!machineId) return res.status(400).json({ error: 'missing machine_id' });
-  req.licenseKey = key || '';
   req.machineId = machineId;
-  req.nodeMode = nodeMode;
   next();
 }
 
@@ -74,13 +47,12 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
   if (!node) {
     db.prepare(`
       INSERT INTO nodes (machine_id, license_key, hostname, label, os, app_version,
-        cpu_pct, ram_pct, cpu_cap, ram_cap, status, last_seen, first_seen, node_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?)
+        cpu_pct, ram_pct, cpu_cap, ram_cap, status, last_seen, first_seen)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)
     `).run(
-      req.machineId, req.licenseKey, hostname || null, label || hostname || null,
+      req.machineId, 'open', hostname || null, label || hostname || null,
       os || null, app_version || null,
-      cpu_pct ?? 0, ram_pct ?? 0, cpu_cap ?? 50, ram_cap ?? 50, t, t,
-      req.nodeMode ? 1 : 0
+      cpu_pct ?? 0, ram_pct ?? 0, cpu_cap ?? 50, ram_cap ?? 50, t, t
     );
     node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
   } else {
@@ -95,7 +67,6 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
           current_job_leads = ?,
           current_job_industry = ?,
           current_job_city = ?,
-          node_mode = COALESCE(?, node_mode),
           status = CASE WHEN paused = 1 THEN 'paused'
                         WHEN current_job_id IS NOT NULL THEN 'working'
                         ELSE 'idle' END,
@@ -107,7 +78,6 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
       +(current_job_leads||0),
       current_job_industry || null,
       current_job_city || null,
-      req.nodeMode ? 1 : 0,
       t, node.id);
   }
 
@@ -127,7 +97,6 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
     paused: !!node.paused,
     cpu_cap: node.cpu_cap,
     ram_cap: node.ram_cap,
-    node_mode: !!node.node_mode,
     commands: cmds.map(c => ({ id: c.id, kind: c.kind, payload: c.payload ? JSON.parse(c.payload) : null }))
   });
 });
@@ -520,7 +489,17 @@ app.get('/api/meta/industries', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'industries.json'));
 });
 app.get('/api/meta/cities', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'us-cities.json'));
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(__dirname, 'public', 'us-cities.json'), 'utf8'));
+    const parsed = raw.map(str => {
+      const s = String(str);
+      const parts = s.split(',').map(x => x.trim());
+      return { city_state: s, city: parts[0] || s, state: parts[1] || '' };
+    });
+    res.json(parsed);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/api/admin/jobs/:id/cancel', requireAdmin, (req, res) => {
@@ -898,13 +877,7 @@ app.post('/api/admin/ai/chat', requireAdmin, async (req, res) => {
 const RELEASES_DIR = path.join(process.env.DATA_DIR || '/data', 'releases');
 try { fs.mkdirSync(RELEASES_DIR, { recursive: true }); } catch {}
 
-function requireLicense(req, res, next) {
-  const key = req.headers['x-license-key'] || req.query.key;
-  if (!validLicense(key)) return res.status(401).json({ error: 'invalid license' });
-  next();
-}
-
-app.get('/api/updates/latest', requireLicense, (req, res) => {
+app.get('/api/updates/latest', (req, res) => {
   try {
     const p = path.join(RELEASES_DIR, 'latest.json');
     if (!fs.existsSync(p)) return res.status(404).json({ error: 'no release published' });
@@ -923,7 +896,7 @@ app.get('/api/updates/latest', requireLicense, (req, res) => {
   }
 });
 
-app.get('/api/updates/download/:file', requireLicense, (req, res) => {
+app.get('/api/updates/download/:file', (req, res) => {
   const name = path.basename(req.params.file); // prevent traversal
   if (!/^[A-Za-z0-9._-]+$/.test(name)) return res.status(400).json({ error: 'bad filename' });
   const fp = path.join(RELEASES_DIR, name);
@@ -1112,5 +1085,5 @@ app.get('/healthz', (req, res) => res.json({ ok: true, t: now() }));
 
 app.listen(PORT, () => {
   console.log(`[fleet] listening on :${PORT}`);
-  console.log(`[fleet] license gate: ${LICENSE_HASHES.length ? `${LICENSE_HASHES.length} hashes` : 'OPEN (set LICENSE_HASHES)'}`);
+  console.log(`[fleet] auth: admin password protected, workers open`);
 });

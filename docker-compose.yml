@@ -1,0 +1,28 @@
+services:
+  fleet:
+    build: .
+    container_name: leadripper-fleet
+    restart: unless-stopped
+    environment:
+      ADMIN_TOKEN: "JEsus777$$!"
+      PORT: "3000"
+      DATA_DIR: "/data"
+    volumes:
+      - /opt/leadripper-fleet-data:/data
+    networks:
+      - coolify
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.fleet.rule=Host(`fleet.leadripper.com`)
+      - traefik.http.routers.fleet.entrypoints=https
+      - traefik.http.routers.fleet.tls=true
+      - traefik.http.routers.fleet.tls.certresolver=letsencrypt
+      - traefik.http.services.fleet.loadbalancer.server.port=3000
+      - traefik.http.routers.fleet-http.rule=Host(`fleet.leadripper.com`)
+      - traefik.http.routers.fleet-http.entrypoints=http
+      - traefik.http.routers.fleet-http.middlewares=fleet-redirect
+      - traefik.http.middlewares.fleet-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.fleet-redirect.redirectscheme.permanent=true
+networks:
+  coolify:
+    external: true
