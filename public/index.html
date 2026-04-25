@@ -589,7 +589,7 @@ function initIndustryPicker(inputId, dropdownId, onPick) {
     if (!q) {
       matches = [...INDUSTRIES].sort((a, b) => a.name.localeCompare(b.name));
       dropdown.innerHTML = matches.map((m, idx) => `
-        <div class="picker-item ${idx===active?'active':''}" onclick="window._pickIndustry_${inputId}('${esc(m.name)}','${esc(m.gcid)}')">
+        <div class="picker-item ${idx===active?'active':''}" onclick="window['_pickIndustry_${inputId}']('${esc(m.name)}','${esc(m.gcid)}')">
           ${esc(m.name)}
           <span class="gcid">${esc(m.gcid)}</span>
         </div>
@@ -603,7 +603,7 @@ function initIndustryPicker(inputId, dropdownId, onPick) {
       .filter(x => x.s > 0).sort((a,b)=>b.s-a.s).slice(0,60).map(x=>x.i);
     if (!matches.length) { dropdown.hidden = true; return; }
     dropdown.innerHTML = matches.map((m, idx) => `
-      <div class="picker-item ${idx===active?'active':''}" onclick="window._pickIndustry_${inputId}('${esc(m.name)}','${esc(m.gcid)}')">
+      <div class="picker-item ${idx===active?'active':''}" onclick="window['_pickIndustry_${inputId}']('${esc(m.name)}','${esc(m.gcid)}')">
         ${esc(m.name).replace(new RegExp(q,'i'), s=>`<mark>${s}</mark>`)}
         <span class="gcid">${esc(m.gcid)}</span>
       </div>
