@@ -392,13 +392,28 @@ app.post('/api/admin/jobs/clear-finished', requireAdmin, (req, res) => {
 
 // Search / filter leads
 app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
-  const { q = '', industry, gcid, state, city, ghlSynced, hasPhone, limit = 500, offset = 0 } = req.query;
+  const { q = '', industry, gcid, state, city, ghlSynced, hasPhone, limit = 100, offset = 0 } = req.query;
   const where = [];
   const params = [];
-  if (q) {
-    where.push(`(name LIKE ? OR phone LIKE ? OR email LIKE ? OR website LIKE ? OR address LIKE ?)`);
-    const qq = `%${q}%`;
-    params.push(qq, qq, qq, qq, qq);
+
+  // Reject very short text searches to avoid full-table scans
+  const qTrim = String(q).trim();
+  if (qTrim.length === 1) {
+    return res.json({ leads: [], total: 0, note: 'Search requires at least 2 characters' });
+  }
+
+  if (qTrim) {
+    // If query looks like a phone number (digits, spaces, dashes, parens),
+    // use prefix search on phone index for speed.
+    const isPhoneLike = /^[\d\s\-\(\)\+\.]+$/.test(qTrim);
+    if (isPhoneLike) {
+      where.push(`phone LIKE ?`);
+      params.push(`${qTrim}%`);
+    } else {
+      where.push(`(name LIKE ? OR phone LIKE ? OR email LIKE ? OR website LIKE ? OR address LIKE ?)`);
+      const qq = `%${qTrim}%`;
+      params.push(qq, qq, qq, qq, qq);
+    }
   }
   if (industry) { where.push('industry = ?'); params.push(industry); }
   if (gcid)     { where.push('gcid = ?');     params.push(gcid); }
@@ -407,10 +422,18 @@ app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
   if (ghlSynced === 'true')  where.push(`ghl_synced = 1`);
   if (ghlSynced === 'false') where.push(`(ghl_synced IS NULL OR ghl_synced = 0)`);
   if (hasPhone === 'true')   where.push(`phone IS NOT NULL AND phone != ''`);
-  const sql = `SELECT * FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT ? OFFSET ?`;
+
+  const whereClause = where.length ? 'WHERE '+where.join(' AND ') : '';
+  const sql = `SELECT * FROM leads ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`;
   params.push(+limit, +offset);
   const rows = db.prepare(sql).all(...params);
-  const totalRow = db.prepare(`SELECT COUNT(*) AS c FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''}`).get(...params.slice(0, -2));
+
+  // Capped count: stops scanning after 10,001 so full-text searches don't
+  // freeze the DB on 500k rows. UI shows "10,000+" when capped.
+  const countSql = qTrim
+    ? `SELECT COUNT(*) AS c FROM (SELECT 1 FROM leads ${whereClause} LIMIT 10001)`
+    : `SELECT COUNT(*) AS c FROM leads ${whereClause}`;
+  const totalRow = db.prepare(countSql).get(...params.slice(0, -2));
   res.json({ leads: rows, total: totalRow.c });
 });
 
@@ -834,11 +857,11 @@ app.post('/api/admin/ghl/reset-sync', requireAdmin, (req, res) => {
 // Leads metadata for dropdown filters
 app.get('/api/admin/leads/meta', requireAdmin, (req, res) => {
   try {
-    const industries = db.prepare(`SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' ORDER BY industry ASC`).all().map(r => r.industry);
-    const states = db.prepare(`SELECT DISTINCT state FROM leads WHERE state IS NOT NULL AND state != '' ORDER BY state ASC`).all().map(r => r.state);
-    const cities = db.prepare(`SELECT DISTINCT city FROM leads WHERE city IS NOT NULL AND city != '' ORDER BY city ASC LIMIT 5000`).all().map(r => r.city);
+    const industries = db.prepare(`SELECT DISTINCT industry FROM leads WHERE industry IS NOT NULL AND industry != '' ORDER BY industry ASC LIMIT 2000`).all().map(r => r.industry);
+    const states = db.prepare(`SELECT DISTINCT state FROM leads WHERE state IS NOT NULL AND state != '' ORDER BY state ASC LIMIT 200`).all().map(r => r.state);
+    const cities = db.prepare(`SELECT DISTINCT city FROM leads WHERE city IS NOT NULL AND city != '' ORDER BY city ASC LIMIT 2000`).all().map(r => r.city);
     // Extract unique tags from JSON arrays
-    const tagRows = db.prepare(`SELECT DISTINCT tags FROM leads WHERE tags IS NOT NULL AND tags != '' AND tags != '[]' LIMIT 10000`).all();
+    const tagRows = db.prepare(`SELECT DISTINCT tags FROM leads WHERE tags IS NOT NULL AND tags != '' AND tags != '[]' LIMIT 5000`).all();
     const tagSet = new Set();
     for (const row of tagRows) {
       try {

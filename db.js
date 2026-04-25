@@ -138,6 +138,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads(phone);
   CREATE INDEX IF NOT EXISTS idx_leads_job ON leads(job_id);
   CREATE INDEX IF NOT EXISTS idx_leads_synced ON leads(synced_at);
+  CREATE INDEX IF NOT EXISTS idx_leads_industry ON leads(industry);
+  CREATE INDEX IF NOT EXISTS idx_leads_state ON leads(state);
+  CREATE INDEX IF NOT EXISTS idx_leads_city ON leads(city);
+  CREATE INDEX IF NOT EXISTS idx_leads_name ON leads(name);
 
   CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
