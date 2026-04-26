@@ -1274,18 +1274,18 @@ async function renderGhl() {
     <div class="panel" style="margin-bottom:14px">
       <div class="panel-header"><h2>Sync</h2></div>
       <div class="panel-body" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
-        <div style="width:180px;position:relative">
+        <div style="width:200px;position:relative">
           <label>Industry</label>
           <input id="ghl-f-industry" value="" placeholder="All industries" autocomplete="off" style="width:100%">
           <div class="picker-dropdown" id="ghl-f-industry-dropdown" hidden style="position:absolute;left:0;right:0;top:100%;z-index:100"></div>
         </div>
         <div style="width:90px">
           <label>State</label>
-          <select id="ghl-f-state"><option value="">All states</option></select>
+          <select id="ghl-f-state" onchange="updateGhlFilterCount()"><option value="">All states</option></select>
         </div>
         <div style="width:140px">
           <label>City</label>
-          <select id="ghl-f-city"><option value="">All cities</option></select>
+          <select id="ghl-f-city" onchange="updateGhlFilterCount()"><option value="">All cities</option></select>
         </div>
         <div style="width:140px">
           <label>Tag</label>
@@ -1295,8 +1295,8 @@ async function renderGhl() {
           <label>Advanced: has ALL tags</label>
           <input id="ghl-f-tags-all" placeholder="tag1, tag2">
         </div>
-        <div style="width:100%">
-          <span class="muted" style="font-size:11px">Syncs ALL matching leads in batches of 1000. No limit.</span>
+        <div style="width:100%;display:flex;align-items:center;gap:12px">
+          <span id="ghl-filter-count" class="muted" style="font-size:12px">Select an industry to see lead count</span>
         </div>
         <button id="ghl-btn-start" class="primary" onclick="startGhlSync()">▶ Start sync (unsynced only)</button>
         <button id="ghl-btn-all" onclick="startGhlSyncAll()">Sync ALL matching (even synced)</button>
@@ -1314,7 +1314,7 @@ async function renderGhl() {
     if (meta.cities) for (const c of meta.cities) { const o=document.createElement('option'); o.value=c; o.textContent=c; selCit.appendChild(o); }
     if (meta.tags) for (const t of meta.tags) { const o=document.createElement('option'); o.value=t; o.textContent=t; selTag.appendChild(o); }
   } catch {}
-  initIndustryPicker('ghl-f-industry', 'ghl-f-industry-dropdown');
+  initIndustryPicker('ghl-f-industry', 'ghl-f-industry-dropdown', (name) => { updateGhlFilterCount(); });
   await refreshGhlDynamic();
   startGhlPoll();
 }
@@ -1360,6 +1360,34 @@ async function refreshGhlDynamic() {
 
 function startGhlPoll() { stopGhlPoll(); ghlPollTimer = setInterval(() => { if (currentView==='ghl') refreshGhlDynamic().catch(()=>{}); }, 3000); }
 function stopGhlPoll() { if (ghlPollTimer) { clearInterval(ghlPollTimer); ghlPollTimer = null; } }
+
+async function updateGhlFilterCount() {
+  const el = document.getElementById('ghl-filter-count');
+  if (!el) return;
+  const industry = ($('ghl-f-industry')?.value || '').trim();
+  const state = ($('ghl-f-state')?.value || '').trim();
+  const city = ($('ghl-f-city')?.value || '').trim();
+  if (!industry && !state && !city) {
+    el.innerHTML = '<span class="muted">Select an industry to see lead count</span>';
+    return;
+  }
+  const qs = new URLSearchParams();
+  if (industry) qs.set('industry', industry);
+  if (state) qs.set('state', state);
+  if (city) qs.set('city', city);
+  qs.set('limit', '0'); qs.set('offset', '0');
+  try {
+    const r = await api('/api/admin/leads/search?' + qs);
+    const total = r.total >= 10001 ? '10,000+' : (r.total || 0).toLocaleString();
+    const parts = [];
+    if (industry) parts.push('Industry: <strong>' + esc(industry) + '</strong>');
+    if (state) parts.push('State: <strong>' + esc(state) + '</strong>');
+    if (city) parts.push('City: <strong>' + esc(city) + '</strong>');
+    el.innerHTML = parts.join(' · ') + ' — <strong>' + total + '</strong> leads match this filter';
+  } catch (e) {
+    el.innerHTML = '<span class="muted">Count unavailable</span>';
+  }
+}
 
 async function saveGhlConfig() {
   const apiKey = $('ghl-key').value.trim();
