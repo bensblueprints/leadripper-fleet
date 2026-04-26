@@ -1,6 +1,6 @@
 // Fleet AI assistant — chat interface that can query leads, kick off GHL syncs,
-// and control mass-scrape. Tool-calling via Anthropic Messages API.
-// Uses the API key saved in settings (anthropic_api_key).
+// and control mass-scrape. Tool-calling via Anthropic Messages API or Kimi (Moonshot) OpenAI-compatible API.
+// Uses the API key saved in settings.
 
 const ghlSync = require('./ghl-sync');
 
@@ -259,10 +259,12 @@ async function runTool(db, name, args) {
 // ---------- Provider: Anthropic ----------
 
 function getProviderConfig(db) {
-  const rows = db.prepare(`SELECT key, value FROM settings WHERE key IN ('ai_provider','anthropic_api_key','openai_api_key','groq_api_key','xai_api_key')`).all();
+  const rows = db.prepare(`SELECT key, value FROM settings WHERE key IN ('ai_provider','kimi_api_key','kimi_model','anthropic_api_key','openai_api_key','groq_api_key','xai_api_key')`).all();
   const m = Object.fromEntries(rows.map(r => [r.key, r.value]));
   return {
-    provider: m.ai_provider || 'anthropic',
+    provider: m.ai_provider || 'kimi',
+    kimi:      m.kimi_api_key  || '',
+    kimiModel: m.kimi_model    || 'kimi-k2-5',
     anthropic: m.anthropic_api_key || '',
     openai:    m.openai_api_key    || '',
     groq:      m.groq_api_key      || '',
@@ -291,56 +293,152 @@ async function callAnthropic(apiKey, messages) {
   return data;
 }
 
-// Convert OpenAI-style chat history coming from client into Anthropic `messages` format,
-// preserving prior tool_use/tool_result blocks.
-function toAnthropicMessages(history) {
-  // history entries: {role: 'user'|'assistant', content: string} OR
-  //                  {role: 'assistant', content: [{type:'text',...},{type:'tool_use',...}]} OR
-  //                  {role: 'user', content: [{type:'tool_result',...}]}
+// Convert Anthropic tools to OpenAI function format
+function toOpenAITools() {
+  return TOOLS.map(t => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema,
+    },
+  }));
+}
+
+// Convert our internal message history to OpenAI format
+function toOpenAIMessages(history) {
   return history.map(m => {
-    if (Array.isArray(m.content)) return { role: m.role, content: m.content };
-    return { role: m.role, content: [{ type: 'text', text: String(m.content || '') }] };
+    if (Array.isArray(m.content)) {
+      // Check if this is a tool_result block ( Anthropic style ) → convert to OpenAI tool message
+      const toolResults = m.content.filter(c => c.type === 'tool_result');
+      if (toolResults.length && m.role === 'user') {
+        return toolResults.map(tr => ({
+          role: 'tool',
+          tool_call_id: tr.tool_use_id,
+          content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+        }));
+      }
+      // Assistant with tool_calls
+      const textParts = m.content.filter(c => c.type === 'text').map(c => c.text).join('');
+      const toolCalls = m.content.filter(c => c.type === 'tool_use').map(c => ({
+        id: c.id,
+        type: 'function',
+        function: { name: c.name, arguments: JSON.stringify(c.input || {}) },
+      }));
+      const out = { role: 'assistant', content: textParts || null };
+      if (toolCalls.length) out.tool_calls = toolCalls;
+      return out;
+    }
+    return { role: m.role, content: String(m.content || '') };
+  }).flat();
+}
+
+async function callKimi(apiKey, model, messages) {
+  const r = await fetch('https://api.moonshot.cn/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 4096,
+      temperature: 0.3,
+      tools: toOpenAITools(),
+      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+    }),
   });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data?.error?.message || JSON.stringify(data?.error) || ('HTTP ' + r.status));
+  return data;
+}
+
+// Convert OpenAI response content blocks back to our internal format
+function fromOpenAIResponse(choice) {
+  const msg = choice.message;
+  const content = [];
+  if (msg.content) content.push({ type: 'text', text: msg.content });
+  if (msg.tool_calls) {
+    for (const tc of msg.tool_calls) {
+      content.push({
+        type: 'tool_use',
+        id: tc.id,
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments || '{}'),
+      });
+    }
+  }
+  return { role: 'assistant', content };
 }
 
 async function chat(db, { history, userMessage, maxHops = 6 }) {
   const cfg = getProviderConfig(db);
-  if (cfg.provider !== 'anthropic') {
-    throw new Error(`AI chat currently supports provider=anthropic only (got "${cfg.provider}"). Change it on the Mass Scrape tab.`);
-  }
-  if (!cfg.anthropic) throw new Error('Anthropic API key not configured. Save one on the Mass Scrape → AI Provider panel.');
 
-  const msgs = toAnthropicMessages(history || []);
-  if (userMessage) msgs.push({ role: 'user', content: [{ type: 'text', text: String(userMessage) }] });
+  if (cfg.provider === 'anthropic') {
+    if (!cfg.anthropic) throw new Error('Anthropic API key not configured. Save one on the Mass Scrape → AI Provider panel.');
+    const msgs = history.map(m => {
+      if (Array.isArray(m.content)) return { role: m.role, content: m.content };
+      return { role: m.role, content: [{ type: 'text', text: String(m.content || '') }] };
+    });
+    if (userMessage) msgs.push({ role: 'user', content: [{ type: 'text', text: String(userMessage) }] });
 
-  let hops = 0;
-  const transcript = [...msgs]; // we'll mutate/append
-
-  while (hops++ < maxHops) {
-    const resp = await callAnthropic(cfg.anthropic, transcript);
-    // Append the assistant turn
-    transcript.push({ role: 'assistant', content: resp.content });
-
-    // Collect any tool_use blocks
-    const toolUses = (resp.content || []).filter(b => b.type === 'tool_use');
-    if (!toolUses.length) {
-      // Plain text reply — done
-      return { messages: transcript.slice(msgs.length - (userMessage ? 1 : 0)), stop_reason: resp.stop_reason };
+    let hops = 0;
+    const transcript = [...msgs];
+    while (hops++ < maxHops) {
+      const resp = await callAnthropic(cfg.anthropic, transcript);
+      transcript.push({ role: 'assistant', content: resp.content });
+      const toolUses = (resp.content || []).filter(b => b.type === 'tool_use');
+      if (!toolUses.length) {
+        return { messages: transcript.slice(msgs.length - (userMessage ? 1 : 0)), stop_reason: resp.stop_reason };
+      }
+      const toolResults = [];
+      for (const tu of toolUses) {
+        const result = await runTool(db, tu.name, tu.input || {});
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: JSON.stringify(result).slice(0, 50000),
+        });
+      }
+      transcript.push({ role: 'user', content: toolResults });
     }
-
-    // Execute tools and send results back
-    const toolResults = [];
-    for (const tu of toolUses) {
-      const result = await runTool(db, tu.name, tu.input || {});
-      toolResults.push({
-        type: 'tool_result',
-        tool_use_id: tu.id,
-        content: JSON.stringify(result).slice(0, 50000), // truncate giant results
-      });
-    }
-    transcript.push({ role: 'user', content: toolResults });
+    return { messages: transcript.slice(msgs.length - (userMessage ? 1 : 0)), stop_reason: 'max_hops' };
   }
-  return { messages: transcript.slice(msgs.length - (userMessage ? 1 : 0)), stop_reason: 'max_hops' };
+
+  if (cfg.provider === 'kimi') {
+    if (!cfg.kimi) throw new Error('Kimi API key not configured. Save one on the Mass Scrape → AI Provider panel.');
+    const msgs = toOpenAIMessages(history || []);
+    if (userMessage) msgs.push({ role: 'user', content: String(userMessage) });
+
+    let hops = 0;
+    const transcript = [...msgs];
+    while (hops++ < maxHops) {
+      const resp = await callKimi(cfg.kimi, cfg.kimiModel, transcript);
+      const choice = resp.choices?.[0];
+      if (!choice) throw new Error('No choices in Kimi response');
+      const assistantMsg = fromOpenAIResponse(choice);
+      transcript.push(assistantMsg);
+
+      const toolUses = assistantMsg.content.filter(b => b.type === 'tool_use');
+      if (!toolUses.length) {
+        return { messages: transcript.slice(msgs.length - (userMessage ? 1 : 0)), stop_reason: choice.finish_reason };
+      }
+
+      const toolResults = [];
+      for (const tu of toolUses) {
+        const result = await runTool(db, tu.name, tu.input || {});
+        toolResults.push({
+          role: 'tool',
+          tool_call_id: tu.id,
+          content: JSON.stringify(result).slice(0, 50000),
+        });
+      }
+      transcript.push(...toolResults);
+    }
+    return { messages: transcript.slice(msgs.length - (userMessage ? 1 : 0)), stop_reason: 'max_hops' };
+  }
+
+  throw new Error(`AI chat currently supports provider=anthropic or kimi only (got "${cfg.provider}"). Change it on the Mass Scrape tab.`);
 }
 
 module.exports = { chat, TOOLS };

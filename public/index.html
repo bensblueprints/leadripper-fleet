@@ -789,12 +789,16 @@ async function renderMassScrape() {
       <h3 style="margin-top:20px">AI Provider</h3>
       <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:13px;align-items:end">
         <label>Provider
-          <select id="ms-ai-provider" style="width:140px">
-            <option value="groq"      ${(st.ai_provider||'groq')==='groq'?'selected':''}>Groq</option>
+          <select id="ms-ai-provider" style="width:140px" onchange="toggleAiModelInput()">
+            <option value="kimi"      ${(st.ai_provider||'kimi')==='kimi'?'selected':''}>Kimi (Moonshot)</option>
+            <option value="groq"      ${st.ai_provider==='groq'?'selected':''}>Groq</option>
             <option value="openai"    ${st.ai_provider==='openai'?'selected':''}>OpenAI</option>
             <option value="anthropic" ${st.ai_provider==='anthropic'?'selected':''}>Claude (Anthropic)</option>
             <option value="xai"       ${st.ai_provider==='xai'?'selected':''}>Grok (xAI)</option>
           </select>
+        </label>
+        <label id="ms-ai-model-wrap">Model
+          <input id="ms-ai-model" value="${esc(st.ai_model||'kimi-k2-5')}" placeholder="kimi-k2-5" style="width:160px">
         </label>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;font-size:13px;margin-top:10px">
@@ -892,19 +896,31 @@ async function refreshMassDynamic() {
   `;
 }
 
+function toggleAiModelInput() {
+  const wrap = document.getElementById('ms-ai-model-wrap');
+  if (!wrap) return;
+  const provider = document.getElementById('ms-ai-provider')?.value || 'kimi';
+  wrap.style.display = provider === 'kimi' ? '' : 'none';
+}
+
 async function massSaveAi() {
   const body = {
     ai_provider: $('ms-ai-provider').value,
   };
+  const model = $('ms-ai-model').value.trim();
+  if (model) body.kimi_model = model;
+  const kk  = $('ms-kimi-key').value.trim();
   const gk  = $('ms-groq-key').value.trim();
   const ok_ = $('ms-openai-key').value.trim();
   const ak  = $('ms-anthropic-key').value.trim();
   const xk  = $('ms-xai-key').value.trim();
+  if (kk)  body.kimi_api_key = kk;
   if (gk)  body.groq_api_key = gk;
   if (ok_) body.openai_api_key = ok_;
   if (ak)  body.anthropic_api_key = ak;
   if (xk)  body.xai_api_key = xk;
   await api('/api/admin/mass-scrape/settings', { method: 'PATCH', body: JSON.stringify(body), headers: {'Content-Type':'application/json'} });
+  $('ms-kimi-key').value = '';
   $('ms-groq-key').value = '';
   $('ms-openai-key').value = '';
   $('ms-anthropic-key').value = '';
