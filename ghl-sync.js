@@ -91,6 +91,12 @@ function buildContactPayload(lead, locationId) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function isDupeError(body) {
+  if (!body) return false;
+  const msg = String(body.message || body.error || body.msg || JSON.stringify(body)).toLowerCase();
+  return msg.includes('duplicate') || msg.includes('duplicated') || msg.includes('already exists');
+}
+
 async function withRetry(fn, label) {
   for (let i = 0; i < MAX_RETRIES; i++) {
     try {
@@ -128,6 +134,26 @@ async function lookupByPhone(apiKey, locationId, phone) {
     }, 'lookup');
     if (result) return result;
   }
+
+  // Fallback: broad search by last 10 digits
+  if (digitsOnly.length >= 10) {
+    const q = digitsOnly.slice(-10);
+    const searchResult = await withRetry(async () => {
+      const url = `${GHL_BASE}/contacts/?locationId=${encodeURIComponent(locationId)}&query=${encodeURIComponent(q)}&limit=5`;
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}`, Version: GHL_VERSION } });
+      if (!r.ok) throw new Error(`search HTTP ${r.status}`);
+      const d = await r.json().catch(() => ({}));
+      const contacts = d?.contacts || [];
+      // Match by digits overlap
+      for (const c of contacts) {
+        const cPhone = String(c.phone || c.cellPhone || c.businessPhone || '').replace(/\D/g, '');
+        if (cPhone.slice(-10) === q) return c.id;
+      }
+      return null;
+    }, 'search');
+    if (searchResult) return searchResult;
+  }
+
   return null;
 }
 
@@ -273,7 +299,7 @@ async function runSync(db, opts = {}) {
               state.created++;
               markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
               appendLog(`created: ${state.current}`);
-            } else if (r.status === 422) {
+            } else if (r.status === 422 || isDupeError(r.body)) {
               // "duplicate contact" — try to extract existing contact ID from response,
               // or fall back to a broader phone lookup now that we try multiple formats.
               let dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
@@ -445,10 +471,31 @@ async function autoSync(db) {
               state.created++;
               markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
               consecutiveErrors = 0;
-            } else if (r.status === 422) {
-              state.updated++;
-              const dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
-              markSynced(db, lead.id, dupeId);
+            } else if (r.status === 422 || isDupeError(r.body)) {
+              let dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
+              if (!dupeId) {
+                try { dupeId = await lookupByPhone(apiKey, locationId, lead.phone); } catch {}
+              }
+              if (dupeId) {
+                try {
+                  const ur = await updateContact(apiKey, dupeId, payload);
+                  if (ur.ok) {
+                    state.updated++;
+                    markSynced(db, lead.id, dupeId);
+                    appendLog(`auto updated dupe: ${state.current}`);
+                  } else {
+                    state.errors++; consecutiveErrors++;
+                    state.last_error = ur.body?.message || ('HTTP ' + ur.status);
+                  }
+                } catch (e) {
+                  state.errors++; consecutiveErrors++;
+                  state.last_error = e.message;
+                }
+              } else {
+                state.updated++;
+                markSynced(db, lead.id, '');
+                appendLog(`auto dupe not found, marked synced: ${state.current}`);
+              }
               consecutiveErrors = 0;
             } else {
               state.errors++; consecutiveErrors++;
