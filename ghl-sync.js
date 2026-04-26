@@ -13,6 +13,10 @@ const GHL_VERSION = '2021-07-28';
 const GAP_MS = 250; // ~4 req/sec, GHL allows 10
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
+const AUTO_SYNC_BATCH = 100;
+const AUTO_SYNC_IDLE_MS = 30_000;
+const AUTO_SYNC_ERROR_MS = 60_000;
+const AUTO_SYNC_MAX_CONSECUTIVE_ERRORS = 10;
 
 const state = {
   running: false,
@@ -28,8 +32,11 @@ const state = {
   current: '',
   last_error: '',
   last_log: [],
-  trigger: '', // 'all' | 'selected' | 'filter'
+  trigger: '', // 'all' | 'selected' | 'filter' | 'auto'
 };
+
+let autoSyncTimer = null;
+let consecutiveErrors = 0;
 
 function appendLog(line) {
   state.last_log.push(`[${new Date().toISOString().slice(11,19)}] ${line}`);
@@ -100,14 +107,28 @@ async function withRetry(fn, label) {
 }
 
 async function lookupByPhone(apiKey, locationId, phone) {
-  return withRetry(async () => {
-    const url = `${GHL_BASE}/contacts/lookup?locationId=${encodeURIComponent(locationId)}&phone=${encodeURIComponent(phone)}`;
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}`, Version: GHL_VERSION } });
-    if (r.status === 404) return null; // genuinely not found
-    if (!r.ok) throw new Error(`lookup HTTP ${r.status}`);
-    const d = await r.json().catch(() => ({}));
-    return d?.contacts?.[0]?.id || null;
-  }, 'lookup');
+  const digitsOnly = String(phone).replace(/\D/g, '');
+  const phonesToTry = [phone];
+  if (!String(phone).startsWith('+1') && digitsOnly.length === 10) {
+    phonesToTry.push('+1' + digitsOnly);
+    phonesToTry.push('1' + digitsOnly);
+  }
+  if (digitsOnly.length === 11 && digitsOnly.startsWith('1')) {
+    phonesToTry.push('+1' + digitsOnly.slice(1));
+  }
+
+  for (const ph of [...new Set(phonesToTry)]) {
+    const result = await withRetry(async () => {
+      const url = `${GHL_BASE}/contacts/lookup?locationId=${encodeURIComponent(locationId)}&phone=${encodeURIComponent(ph)}`;
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}`, Version: GHL_VERSION } });
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`lookup HTTP ${r.status}`);
+      const d = await r.json().catch(() => ({}));
+      return d?.contacts?.[0]?.id || null;
+    }, 'lookup');
+    if (result) return result;
+  }
+  return null;
 }
 
 async function createContact(apiKey, payload) {
@@ -253,11 +274,35 @@ async function runSync(db, opts = {}) {
               markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
               appendLog(`created: ${state.current}`);
             } else if (r.status === 422) {
-              // "duplicate contact" — try to extract existing contact ID from various response shapes
-              state.updated++;
-              const dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
-              markSynced(db, lead.id, dupeId);
-              appendLog(`dupe: ${state.current} (id=${dupeId || 'unknown'})`);
+              // "duplicate contact" — try to extract existing contact ID from response,
+              // or fall back to a broader phone lookup now that we try multiple formats.
+              let dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
+              if (!dupeId) {
+                try { dupeId = await lookupByPhone(apiKey, locationId, lead.phone); } catch {}
+              }
+              if (dupeId) {
+                // Update the existing contact so it has latest info + tags
+                try {
+                  const ur = await updateContact(apiKey, dupeId, payload);
+                  if (ur.ok) {
+                    state.updated++;
+                    markSynced(db, lead.id, dupeId);
+                    appendLog(`updated dupe: ${state.current} (id=${dupeId})`);
+                  } else {
+                    state.errors++;
+                    state.last_error = ur.body?.message || ('HTTP ' + ur.status);
+                    appendLog(`error updating dupe ${state.current}: ${state.last_error}`);
+                  }
+                } catch (e) {
+                  state.errors++;
+                  appendLog(`exception updating dupe ${state.current}: ${e.message}`);
+                }
+              } else {
+                // Can't find the dupe — mark synced so we don't retry forever
+                state.updated++;
+                markSynced(db, lead.id, '');
+                appendLog(`dupe not found, marked synced: ${state.current}`);
+              }
             } else {
               state.errors++;
               state.last_error = r.body?.message || ('HTTP ' + r.status);
@@ -330,4 +375,128 @@ function bulkResetSync(db, leadIds) {
   return r.changes;
 }
 
-module.exports = { runSync, cancel, status, stats, getCreds, saveCreds, bulkResetSync };
+// ---------- continuous background sync ----------
+// Runs indefinitely: pulls unsynced leads in small batches, syncs them, sleeps
+// when caught up. Resumes automatically on restart because unsynced leads are
+// simply re-queried — no cursor needed.
+async function autoSync(db) {
+  const { apiKey, locationId } = getCreds(db);
+  if (!apiKey || !locationId) {
+    appendLog('auto-sync skipped: no GHL credentials');
+    return;
+  }
+
+  // Load last cursor (highest id already processed in auto mode) so we don't
+  // re-scan already-synced leads from previous sessions.
+  let cursor = 0;
+  try {
+    const row = db.prepare(`SELECT value FROM settings WHERE key = 'ghl_auto_sync_cursor'`).get();
+    if (row) cursor = +row.value || 0;
+  } catch {}
+
+  while (true) {
+    if (state.cancel) { appendLog('auto-sync cancelled'); break; }
+
+    try {
+      const batch = db.prepare(`
+        SELECT id, name, phone, email, website, address, city, state, industry,
+               website_platform, website_status, tags, ghl_contact_id
+        FROM leads
+        WHERE ghl_synced = 0 AND phone IS NOT NULL AND phone != '' AND id > ?
+        ORDER BY id ASC LIMIT ?
+      `).all(cursor, AUTO_SYNC_BATCH);
+
+      if (!batch.length) {
+        // Caught up — reset cursor to 0 so new leads are picked up next cycle
+        cursor = 0;
+        db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('ghl_auto_sync_cursor', '0')`).run();
+        appendLog('auto-sync caught up — sleeping 30s');
+        await sleep(AUTO_SYNC_IDLE_MS);
+        continue;
+      }
+
+      for (const lead of batch) {
+        if (state.cancel) break;
+        cursor = Math.max(cursor, lead.id);
+        state.current = lead.name || lead.phone || ('#' + lead.id);
+
+        if (lead.ghl_contact_id && String(lead.ghl_contact_id).trim()) {
+          state.skipped++;
+          continue;
+        }
+
+        try {
+          const payload = buildContactPayload(lead, locationId);
+          let existingId = null;
+          try { existingId = await lookupByPhone(apiKey, locationId, lead.phone); } catch {}
+          if (existingId) {
+            const r = await updateContact(apiKey, existingId, payload);
+            if (r.ok) {
+              state.updated++;
+              markSynced(db, lead.id, existingId);
+              consecutiveErrors = 0;
+            } else {
+              state.errors++; consecutiveErrors++;
+              state.last_error = r.body?.message || ('HTTP ' + r.status);
+            }
+          } else {
+            const r = await createContact(apiKey, payload);
+            if (r.ok) {
+              state.created++;
+              markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
+              consecutiveErrors = 0;
+            } else if (r.status === 422) {
+              state.updated++;
+              const dupeId = r.body?.meta?.contactId || r.body?.contact?.id || r.body?.id || r.body?.data?.id || '';
+              markSynced(db, lead.id, dupeId);
+              consecutiveErrors = 0;
+            } else {
+              state.errors++; consecutiveErrors++;
+              state.last_error = r.body?.message || ('HTTP ' + r.status);
+            }
+          }
+        } catch (e) {
+          state.errors++; consecutiveErrors++;
+          state.last_error = e.message;
+        }
+        state.done++;
+        await sleep(GAP_MS);
+      }
+
+      // Persist cursor so a restart resumes near this point
+      db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('ghl_auto_sync_cursor', ?)`).run(String(cursor));
+
+      if (consecutiveErrors >= AUTO_SYNC_MAX_CONSECUTIVE_ERRORS) {
+        appendLog(`auto-sync paused: ${consecutiveErrors} consecutive errors (${state.last_error})`);
+        await sleep(AUTO_SYNC_ERROR_MS);
+        consecutiveErrors = 0;
+      }
+    } catch (e) {
+      appendLog('auto-sync loop error: ' + e.message);
+      await sleep(AUTO_SYNC_ERROR_MS);
+    }
+  }
+}
+
+function startAutoSync(db) {
+  if (autoSyncTimer) return; // already running
+  state.cancel = false;
+  appendLog('auto-sync starting');
+  autoSyncTimer = autoSync(db).catch(e => {
+    appendLog('auto-sync crashed: ' + e.message);
+  }).finally(() => {
+    autoSyncTimer = null;
+    // Auto-restart after error
+    setTimeout(() => startAutoSync(db), AUTO_SYNC_ERROR_MS);
+  });
+}
+
+function stopAutoSync() {
+  state.cancel = true;
+  if (autoSyncTimer) {
+    // Can't truly stop the promise, but cancel flag will exit the loop
+    autoSyncTimer = null;
+  }
+}
+
+module.exports = { runSync, cancel, status, stats, getCreds, saveCreds, bulkResetSync, startAutoSync, stopAutoSync };

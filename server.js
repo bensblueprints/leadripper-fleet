@@ -111,22 +111,35 @@ app.post('/api/fleet/pull-job', requireWorker, (req, res) => {
     if (j && j.status === 'running') return res.json({ job: j, resumed: true });
   }
 
-  // Prefer jobs targeted at this node, else any queued job
-  const job = db.prepare(`
-    SELECT * FROM jobs
-    WHERE status = 'queued' AND (target_node_id IS NULL OR target_node_id = ?)
-    ORDER BY priority DESC, id ASC LIMIT 1
-  `).get(node.id);
+  // Atomic claim: start transaction, SELECT queued job, flip to running.
+  // Prevents two workers from grabbing the same job in a race.
+  let job = null;
+  const claimTxn = db.transaction(() => {
+    const j = db.prepare(`
+      SELECT * FROM jobs
+      WHERE status = 'queued' AND (target_node_id IS NULL OR target_node_id = ?)
+      ORDER BY priority DESC, id ASC LIMIT 1
+    `).get(node.id);
+    if (!j) return null;
+    const t = now();
+    db.prepare(`
+      UPDATE jobs SET status='running', assigned_node_id=?, assigned_at=?, started_at=? WHERE id=?
+    `).run(node.id, t, t, j.id);
+    db.prepare(`UPDATE nodes SET current_job_id=?, status='working' WHERE id=?`).run(j.id, node.id);
+    return j;
+  });
+  job = claimTxn();
 
   if (!job) return res.json({ job: null });
 
-  const t = now();
-  db.prepare(`
-    UPDATE jobs SET status='running', assigned_node_id=?, assigned_at=?, started_at=? WHERE id=?
-  `).run(node.id, t, t, job.id);
-  db.prepare(`UPDATE nodes SET current_job_id=?, status='working' WHERE id=?`).run(job.id, node.id);
-
-  res.json({ job: { ...job, status: 'running', assigned_node_id: node.id } });
+  // Parse cities JSON for batch jobs; fall back to single city for legacy jobs
+  let jobOut = { ...job, status: 'running', assigned_node_id: node.id };
+  if (job.cities) {
+    try { jobOut.cities = JSON.parse(job.cities); } catch { jobOut.cities = [job.city]; }
+  } else {
+    jobOut.cities = [job.state ? `${job.city}, ${job.state}` : job.city];
+  }
+  res.json({ job: jobOut });
 });
 
 // Worker returns results for a job.
@@ -339,31 +352,41 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
   res.json({ nodes, jobs, leads_total: leads.total, leads_24h: today.c });
 });
 
-// Dispatch a job. If cities is an array, fans out to multiple jobs.
+// Dispatch jobs. Batches cities into multi-city jobs (default 50 per job) so workers
+// can scrape concurrently instead of doing 1 city per job.
 app.post('/api/admin/dispatch', requireAdmin, (req, res) => {
-  const { industry, cities = [], state, target_node_id = null, priority = 0, max_results = 20 } = req.body || {};
+  const { industry, cities = [], state, target_node_id = null, priority = 0, max_results = 20, batch_size = 50 } = req.body || {};
   if (!industry || !cities.length) return res.status(400).json({ error: 'industry + cities required' });
 
+  // Parse city strings, handling "City, ST" format
+  const parsed = [];
+  for (const city of cities) {
+    let c = city, s = state || null;
+    if (typeof city === 'string' && city.includes(',')) {
+      const parts = city.split(',').map(x => x.trim());
+      c = parts[0];
+      s = parts[1] || s;
+    }
+    parsed.push({ city: c, state: s });
+  }
+
   const ins = db.prepare(`
-    INSERT INTO jobs (industry, city, state, target_node_id, priority, status, max_results)
-    VALUES (?, ?, ?, ?, ?, 'queued', ?)
+    INSERT INTO jobs (industry, city, cities, state, target_node_id, priority, status, max_results)
+    VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
   `);
   let count = 0;
+  const bs = Math.max(1, Math.min(+batch_size || 50, 200));
   const txn = db.transaction(() => {
-    for (const city of cities) {
-      // Accept "City, ST" strings too — split them
-      let c = city, s = state || null;
-      if (typeof city === 'string' && city.includes(',')) {
-        const parts = city.split(',').map(x => x.trim());
-        c = parts[0];
-        s = parts[1] || s;
-      }
-      ins.run(industry, c, s, target_node_id || null, priority, +max_results || 20);
+    for (let i = 0; i < parsed.length; i += bs) {
+      const batch = parsed.slice(i, i + bs);
+      const first = batch[0];
+      const cityList = JSON.stringify(batch.map(b => b.state ? `${b.city}, ${b.state}` : b.city));
+      ins.run(industry, first.city, cityList, first.state, target_node_id || null, priority, +max_results || 20);
       count++;
     }
   });
   txn();
-  res.json({ ok: true, dispatched: count });
+  res.json({ ok: true, dispatched: count, cities: parsed.length });
 });
 
 // Broadcast: pause / resume / kill every node
@@ -877,6 +900,45 @@ app.post('/api/admin/ghl/reset-sync', requireAdmin, (req, res) => {
   const ids = Array.isArray(req.body?.leadIds) ? req.body.leadIds.map(Number).filter(Boolean) : [];
   const changed = ghlSync.bulkResetSync(db, ids);
   res.json({ ok: true, changed });
+});
+
+// Admin: batch-convert legacy single-city jobs into multi-city batch jobs.
+// Groups queued jobs by industry+state, merges cities into batches of 50.
+app.post('/api/admin/jobs/batch-convert', requireAdmin, (req, res) => {
+  try {
+    const batchSize = Math.max(2, Math.min(+req.body?.batch_size || 50, 200));
+    const rows = db.prepare(`SELECT id, industry, city, state FROM jobs WHERE status = 'queued' AND (cities IS NULL OR cities = '') ORDER BY industry, state, id ASC`).all();
+
+    // Group by industry + state
+    const groups = new Map();
+    for (const r of rows) {
+      const key = `${r.industry}||${r.state || ''}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(r);
+    }
+
+    let merged = 0, deleted = 0;
+    const txn = db.transaction(() => {
+      for (const [, jobs] of groups) {
+        for (let i = 0; i < jobs.length; i += batchSize) {
+          const batch = jobs.slice(i, i + batchSize);
+          const first = batch[0];
+          const cityList = JSON.stringify(batch.map(j => j.state ? `${j.city}, ${j.state}` : j.city));
+          db.prepare(`UPDATE jobs SET cities = ?, city = ? WHERE id = ?`).run(cityList, first.city, first.id);
+          merged++;
+          // Delete the rest in this batch
+          for (let k = 1; k < batch.length; k++) {
+            db.prepare(`DELETE FROM jobs WHERE id = ?`).run(batch[k].id);
+            deleted++;
+          }
+        }
+      }
+    });
+    txn();
+    res.json({ ok: true, merged, deleted, original_count: rows.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Leads metadata for dropdown filters

@@ -37,7 +37,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     industry TEXT NOT NULL,
-    city TEXT NOT NULL,
+    city TEXT,
+    cities TEXT,
     state TEXT,
     target_node_id INTEGER,
     assigned_node_id INTEGER,
@@ -61,6 +62,9 @@ try {
   const cols = db.prepare(`PRAGMA table_info(jobs)`).all().map(c => c.name);
   if (!cols.includes('max_results')) {
     db.exec(`ALTER TABLE jobs ADD COLUMN max_results INTEGER DEFAULT 20`);
+  }
+  if (!cols.includes('cities')) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN cities TEXT`);
   }
 } catch {}
 
