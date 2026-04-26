@@ -412,6 +412,8 @@ async function autoSync(db) {
     appendLog('auto-sync skipped: no GHL credentials');
     return;
   }
+  state.running = true;
+  state.cancel = false;
 
   // Load last cursor (highest id already processed in auto mode) so we don't
   // re-scan already-synced leads from previous sessions.
@@ -535,6 +537,7 @@ function startAutoSync(db) {
     appendLog('auto-sync crashed: ' + e.message);
   }).finally(() => {
     autoSyncTimer = null;
+    state.running = false;
     // Auto-restart after error
     setTimeout(() => startAutoSync(db), AUTO_SYNC_ERROR_MS);
   });
