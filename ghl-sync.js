@@ -221,6 +221,16 @@ async function runSync(db, opts = {}) {
       for (const lead of batch) {
         if (state.cancel) { appendLog('cancelled by admin'); break; }
         state.current = lead.name || lead.phone || ('#' + lead.id);
+
+        // Skip leads that already have a known GHL contact ID — they were already synced
+        if (lead.ghl_contact_id && String(lead.ghl_contact_id).trim()) {
+          state.skipped++;
+          state.done++;
+          appendLog(`skipped (already has ghl_contact_id): ${state.current}`);
+          await new Promise(r => setTimeout(r, GAP_MS));
+          continue;
+        }
+
         try {
           const payload = buildContactPayload(lead, locationId);
           let existingId = null;
