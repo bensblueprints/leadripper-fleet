@@ -158,7 +158,11 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
       // worker was reading l.name) that poisoned thousands of rows.
       const nm = (l.name || l.business_name || '').toString().trim();
       if (!nm) { skipped++; continue; }
-      const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' ? l.tags : '[]');
+      const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' ? JSON.parse(l.tags) : []);
+      const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
+      const tagsSet = new Set(baseTags);
+      if (industryTag) tagsSet.add(industryTag);
+      const tagsJson = JSON.stringify([...tagsSet]);
       insertLead.run(job.id, node.id,
         nm, l.phone || null, l.email || null, l.website || null,
         l.address || null, l.city || job.city, l.state || job.state,
@@ -487,7 +491,11 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
   let inserted = 0, skipped = 0;
   const txn = db.transaction(() => {
     for (const l of leads) {
-      const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' && l.tags.trim().startsWith('[') ? l.tags : '[]');
+      const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' && l.tags.trim().startsWith('[') ? JSON.parse(l.tags) : []);
+      const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
+      const tagsSet = new Set(baseTags);
+      if (industryTag) tagsSet.add(industryTag);
+      const tagsJson = JSON.stringify([...tagsSet]);
       const r = ins.run(
         l.name || l.business_name || null,
         l.phone || null, l.email || null, l.website || null,
