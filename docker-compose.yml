@@ -4,7 +4,7 @@ services:
     container_name: leadripper-fleet
     restart: unless-stopped
     environment:
-      ADMIN_TOKEN: "JEsus777$$!"
+      ADMIN_TOKEN: "2TQmwZePcT5k-PBcpY8k4YwPEG3dtNzP"
       PORT: "3000"
       DATA_DIR: "/data"
     volumes:
