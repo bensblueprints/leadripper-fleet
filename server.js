@@ -426,17 +426,29 @@ app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
   if (hasPhone === 'true')   where.push(`phone IS NOT NULL AND phone != ''`);
 
   const whereClause = where.length ? 'WHERE '+where.join(' AND ') : '';
-  const sql = `SELECT * FROM leads ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`;
-  params.push(+limit, +offset);
-  const rows = db.prepare(sql).all(...params);
 
-  // Capped count: stops scanning after 10,001 so full-text searches don't
-  // freeze the DB on 500k rows. UI shows "10,000+" when capped.
-  const countSql = qTrim
-    ? `SELECT COUNT(*) AS c FROM (SELECT 1 FROM leads ${whereClause} LIMIT 10001)`
-    : `SELECT COUNT(*) AS c FROM leads ${whereClause}`;
-  const totalRow = db.prepare(countSql).get(...params.slice(0, -2));
-  res.json({ leads: rows, total: totalRow.c });
+  // Fetch only columns the UI needs — SELECT * pulls large TEXT fields (ai_seo_notes,
+  // ai_design_notes, etc.) which slows I/O on 475k+ rows.
+  const selectCols = 'id,name,phone,email,website,website_platform,website_status,tags,city,state,industry,rating,reviews,ai_seo_score,ai_design_score,created_at';
+
+  // Fetch limit+1 so we know if there's a next page without an expensive COUNT.
+  const fetchLimit = +limit + 1;
+  const sql = `SELECT ${selectCols} FROM leads ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`;
+  params.push(fetchLimit, +offset);
+  const rows = db.prepare(sql).all(...params);
+  const hasMore = rows.length > limit;
+  if (hasMore) rows.pop(); // trim the extra row
+
+  // Capped count: for unfiltered loads use fast COUNT; for text searches skip the
+  // expensive subquery-count and just return the capped limit so the UI shows "10,000+".
+  let total = 0;
+  if (!qTrim) {
+    const totalRow = db.prepare(`SELECT COUNT(*) AS c FROM leads ${whereClause}`).get(...params.slice(0, -2));
+    total = totalRow.c;
+  } else {
+    total = 10001; // signals "10,000+" to the UI; actual count is not worth the scan
+  }
+  res.json({ leads: rows, total, has_more: hasMore });
 });
 
 // CSV export

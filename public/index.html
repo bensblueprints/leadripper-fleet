@@ -1061,10 +1061,10 @@ async function renderLeads() {
         </table>
       </div>
       <div style="padding:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-        <span class="muted">Showing ${leadsOffset+1}–${Math.min(leadsOffset+r.leads.length, r.total)} of ${totalText}</span>
+        <span class="muted">Showing ${leadsOffset+1}–${leadsOffset+r.leads.length}${r.total>=10001?' of 10,000+':' of '+r.total.toLocaleString()}</span>
         <div>
           <button ${leadsOffset<=0?'disabled':''} onclick="leadsOffset=Math.max(0,leadsOffset-${LEADS_PAGE});loadCurrent()">← Prev</button>
-          <button ${leadsOffset+LEADS_PAGE>=r.total?'disabled':''} onclick="leadsOffset+=${LEADS_PAGE};loadCurrent()">Next →</button>
+          <button ${(r.has_more===false || (!r.has_more && leadsOffset+LEADS_PAGE>=r.total))?'disabled':''} onclick="leadsOffset+=${LEADS_PAGE};loadCurrent()">Next →</button>
         </div>
       </div>
     </div>
