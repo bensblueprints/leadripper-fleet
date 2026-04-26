@@ -902,6 +902,20 @@ app.post('/api/admin/ghl/reset-sync', requireAdmin, (req, res) => {
   res.json({ ok: true, changed });
 });
 
+app.post('/api/admin/ghl/auto-sync', requireAdmin, (req, res) => {
+  try {
+    ghlSync.startAutoSync(db);
+    res.json({ ok: true, running: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/ghl/auto-sync/stop', requireAdmin, (req, res) => {
+  ghlSync.stopAutoSync();
+  res.json({ ok: true, running: false });
+});
+
 // Admin: batch-convert legacy single-city jobs into multi-city batch jobs.
 // Groups queued jobs by industry+state, merges cities into batches of 50.
 app.post('/api/admin/jobs/batch-convert', requireAdmin, (req, res) => {
