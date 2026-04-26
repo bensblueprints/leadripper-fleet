@@ -55,7 +55,7 @@ function saveCreds(db, { apiKey, locationId }) {
   if (typeof locationId === 'string') ins.run('ghl_location_id', locationId.trim());
 }
 
-function buildContactPayload(lead, locationId) {
+function buildContactPayload(lead, locationId, forUpdate = false) {
   const tags = ['leadripper'];
   if (lead.industry) tags.push(String(lead.industry).toLowerCase().replace(/\s+/g, '-'));
   if (lead.website) tags.push('has-website'); else tags.push('no-website');
@@ -73,7 +73,6 @@ function buildContactPayload(lead, locationId) {
   const lastName = parts.slice(1).join(' ') || 'Owner';
 
   const p = {
-    locationId,
     firstName,
     lastName,
     companyName: lead.name || '',
@@ -85,6 +84,7 @@ function buildContactPayload(lead, locationId) {
     source: 'LeadRipper Fleet',
     tags,
   };
+  if (!forUpdate) p.locationId = locationId;
   if (lead.email && String(lead.email).includes('@')) p.email = lead.email;
   return p;
 }
@@ -279,11 +279,12 @@ async function runSync(db, opts = {}) {
         }
 
         try {
-          const payload = buildContactPayload(lead, locationId);
+          const createPayload = buildContactPayload(lead, locationId);
+          const updatePayload = buildContactPayload(lead, locationId, true);
           let existingId = null;
           try { existingId = await lookupByPhone(apiKey, locationId, lead.phone); } catch {}
           if (existingId) {
-            const r = await updateContact(apiKey, existingId, payload);
+            const r = await updateContact(apiKey, existingId, updatePayload);
             if (r.ok) {
               state.updated++;
               markSynced(db, lead.id, existingId);
@@ -294,7 +295,7 @@ async function runSync(db, opts = {}) {
               appendLog(`error updating ${state.current}: ${state.last_error}`);
             }
           } else {
-            const r = await createContact(apiKey, payload);
+            const r = await createContact(apiKey, createPayload);
             if (r.ok) {
               state.created++;
               markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
@@ -309,7 +310,7 @@ async function runSync(db, opts = {}) {
               if (dupeId) {
                 // Update the existing contact so it has latest info + tags
                 try {
-                  const ur = await updateContact(apiKey, dupeId, payload);
+                  const ur = await updateContact(apiKey, dupeId, updatePayload);
                   if (ur.ok) {
                     state.updated++;
                     markSynced(db, lead.id, dupeId);
@@ -452,11 +453,12 @@ async function autoSync(db) {
         }
 
         try {
-          const payload = buildContactPayload(lead, locationId);
+          const createPayload = buildContactPayload(lead, locationId);
+          const updatePayload = buildContactPayload(lead, locationId, true);
           let existingId = null;
           try { existingId = await lookupByPhone(apiKey, locationId, lead.phone); } catch {}
           if (existingId) {
-            const r = await updateContact(apiKey, existingId, payload);
+            const r = await updateContact(apiKey, existingId, updatePayload);
             if (r.ok) {
               state.updated++;
               markSynced(db, lead.id, existingId);
@@ -466,7 +468,7 @@ async function autoSync(db) {
               state.last_error = r.body?.message || ('HTTP ' + r.status);
             }
           } else {
-            const r = await createContact(apiKey, payload);
+            const r = await createContact(apiKey, createPayload);
             if (r.ok) {
               state.created++;
               markSynced(db, lead.id, r.body?.contact?.id || r.body?.id || '');
@@ -478,7 +480,7 @@ async function autoSync(db) {
               }
               if (dupeId) {
                 try {
-                  const ur = await updateContact(apiKey, dupeId, payload);
+                  const ur = await updateContact(apiKey, dupeId, updatePayload);
                   if (ur.ok) {
                     state.updated++;
                     markSynced(db, lead.id, dupeId);
