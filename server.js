@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_PASSWORD = 'JEsusCHrist';
+const ADMIN_PASSWORD = '2TQmwZePcT5k-PBcpY8k4YwPEG3dtNzP';
 
 function now() { return Math.floor(Date.now() / 1000); }
 
