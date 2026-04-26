@@ -244,8 +244,8 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
        website_platform, website_status, tags, business_hours,
        reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
        ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_analyzed_at, ai_provider,
-       created_at)
-    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ghl_synced, ghl_contact_id, created_at)
+    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const t = now();
@@ -264,6 +264,8 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
         l.ai_design_score == null ? null : +l.ai_design_score,
         l.ai_seo_notes || null, l.ai_design_notes || null,
         l.ai_analyzed_at || null, l.ai_provider || null,
+        l.ghl_synced == null ? 0 : +l.ghl_synced,
+        l.ghl_contact_id || null,
         t);
       if (r.changes) inserted++; else skipped++;
     }
@@ -286,7 +288,7 @@ app.get('/api/fleet/master-leads/pull', requireWorker, (req, res) => {
     'website_platform','website_status','tags','business_hours',
     'reviews_1star','reviews_2star','reviews_3star','reviews_4star','reviews_5star',
     'ai_seo_score','ai_design_score','ai_seo_notes','ai_design_notes','ai_analyzed_at','ai_provider',
-    'created_at'];
+    'ghl_synced','ghl_contact_id','created_at'];
   const rows = db.prepare(
     `SELECT ${cols.join(',')} FROM leads WHERE id > ? ORDER BY id ASC LIMIT ?`
   ).all(sinceId, limit);
