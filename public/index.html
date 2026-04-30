@@ -270,27 +270,111 @@ function renderLeadDetail(l) {
   const totalReviews = (+l.reviews_1star||0)+(+l.reviews_2star||0)+(+l.reviews_3star||0)+(+l.reviews_4star||0)+(+l.reviews_5star||0);
   const hasHisto = totalReviews > 0;
   const hrs = l.business_hours ? String(l.business_hours).split(/\s*\|\s*|\n/).filter(Boolean) : [];
+  const tagsVal = (() => { try { const t = JSON.parse(l.tags||'[]'); return Array.isArray(t) ? t.join(', ') : l.tags||''; } catch { return l.tags||''; } })();
   return `
-    <div style="padding:12px 16px;background:rgba(0,191,160,.04);border-top:1px solid rgba(0,191,160,.15);border-bottom:1px solid rgba(0,191,160,.15);display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;font-size:11px">
-      <div>
-        <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">REVIEW HISTOGRAM</div>
-        ${hasHisto ? [5,4,3,2,1].map(s => histoRow(s+'★', +l['reviews_'+s+'star']||0, totalReviews)).join('') : '<span class="muted">No histogram scraped yet</span>'}
-        <div class="muted" style="margin-top:4px">Total: ${l.reviews||totalReviews||0} reviews${l.rating?` · avg ${l.rating}★`:''}</div>
+    <div style="padding:12px 16px;background:rgba(0,191,160,.04);border-top:1px solid rgba(0,191,160,.15);border-bottom:1px solid rgba(0,191,160,.15);font-size:11px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="color:#00bfa0;font-weight:700">LEAD DETAILS</div>
+        <div style="display:flex;gap:6px">
+          <button onclick="enableLeadEdit(${l.id})">Edit</button>
+          <button onclick="toggleLeadDetail(${l.id})">Close</button>
+        </div>
       </div>
-      <div>
-        <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">BUSINESS HOURS</div>
-        ${hrs.length ? hrs.map(h => `<div style="margin:2px 0">${esc(h)}</div>`).join('') : '<span class="muted">Not scraped</span>'}
-        ${l.address ? `<div style="margin-top:8px;color:#00bfa0;font-weight:700">ADDRESS</div><div>${esc(l.address)}</div>` : ''}
+      <div id="lead-view-${l.id}">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px">
+          <div>
+            <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">REVIEW HISTOGRAM</div>
+            ${hasHisto ? [5,4,3,2,1].map(s => histoRow(s+'★', +l['reviews_'+s+'star']||0, totalReviews)).join('') : '<span class="muted">No histogram scraped yet</span>'}
+            <div class="muted" style="margin-top:4px">Total: ${l.reviews||totalReviews||0} reviews${l.rating?` · avg ${l.rating}★`:''}</div>
+          </div>
+          <div>
+            <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">BUSINESS HOURS</div>
+            ${hrs.length ? hrs.map(h => `<div style="margin:2px 0">${esc(h)}</div>`).join('') : '<span class="muted">Not scraped</span>'}
+            ${l.address ? `<div style="margin-top:8px;color:#00bfa0;font-weight:700">ADDRESS</div><div>${esc(l.address)}</div>` : ''}
+          </div>
+          <div>
+            <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">AI ANALYSIS</div>
+            ${(l.ai_seo_score!=null || l.ai_design_score!=null) ? `
+              <div style="margin:2px 0">SEO: ${aiBadge(l.ai_seo_score)} ${l.ai_seo_notes?`<span class="muted">${esc(l.ai_seo_notes)}</span>`:''}</div>
+              <div style="margin:2px 0">Design: ${aiBadge(l.ai_design_score)} ${l.ai_design_notes?`<span class="muted">${esc(l.ai_design_notes)}</span>`:''}</div>
+              ${l.ai_provider?`<div class="muted" style="margin-top:4px">via ${esc(l.ai_provider)}${l.ai_analyzed_at?` · ${fmt(l.ai_analyzed_at)}`:''}</div>`:''}
+            ` : '<span class="muted">Not analyzed</span>'}
+          </div>
+        </div>
       </div>
-      <div>
-        <div style="color:#00bfa0;font-weight:700;margin-bottom:6px">AI ANALYSIS</div>
-        ${(l.ai_seo_score!=null || l.ai_design_score!=null) ? `
-          <div style="margin:2px 0">SEO: ${aiBadge(l.ai_seo_score)} ${l.ai_seo_notes?`<span class="muted">${esc(l.ai_seo_notes)}</span>`:''}</div>
-          <div style="margin:2px 0">Design: ${aiBadge(l.ai_design_score)} ${l.ai_design_notes?`<span class="muted">${esc(l.ai_design_notes)}</span>`:''}</div>
-          ${l.ai_provider?`<div class="muted" style="margin-top:4px">via ${esc(l.ai_provider)}${l.ai_analyzed_at?` · ${fmt(l.ai_analyzed_at)}`:''}</div>`:''}
-        ` : '<span class="muted">Not analyzed</span>'}
+      <div id="lead-edit-${l.id}" style="display:none">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+          <div><label>Name</label><input id="le-${l.id}-name" value="${esc(l.name||'')}"></div>
+          <div><label>Phone</label><input id="le-${l.id}-phone" value="${esc(l.phone||'')}"></div>
+          <div><label>Email</label><input id="le-${l.id}-email" value="${esc(l.email||'')}"></div>
+          <div><label>Website</label><input id="le-${l.id}-website" value="${esc(l.website||'')}"></div>
+          <div><label>Address</label><input id="le-${l.id}-address" value="${esc(l.address||'')}"></div>
+          <div><label>City</label><input id="le-${l.id}-city" value="${esc(l.city||'')}"></div>
+          <div><label>State</label><input id="le-${l.id}-state" value="${esc(l.state||'')}"></div>
+          <div><label>Industry</label><input id="le-${l.id}-industry" value="${esc(l.industry||'')}"></div>
+          <div><label>Rating</label><input id="le-${l.id}-rating" value="${esc(l.rating!=null?l.rating:'')}"></div>
+          <div><label>Reviews</label><input id="le-${l.id}-reviews" value="${esc(l.reviews!=null?l.reviews:'')}"></div>
+          <div><label>Platform</label><input id="le-${l.id}-platform" value="${esc(l.website_platform||'')}"></div>
+          <div><label>Site Status</label><input id="le-${l.id}-status" value="${esc(l.website_status||'')}"></div>
+        </div>
+        <div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>Tags (comma-separated)</label><input id="le-${l.id}-tags" value="${esc(tagsVal)}"></div>
+          <div><label>Business Hours</label><input id="le-${l.id}-hours" value="${esc(l.business_hours||'')}"></div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="primary" onclick="saveLeadEdit(${l.id})">Save Changes</button>
+          <button onclick="cancelLeadEdit(${l.id})">Cancel</button>
+        </div>
       </div>
     </div>`;
+}
+function enableLeadEdit(id) {
+  const view = document.getElementById('lead-view-'+id);
+  const edit = document.getElementById('lead-edit-'+id);
+  if (view) view.style.display = 'none';
+  if (edit) edit.style.display = '';
+}
+function cancelLeadEdit(id) {
+  const view = document.getElementById('lead-view-'+id);
+  const edit = document.getElementById('lead-edit-'+id);
+  if (view) view.style.display = '';
+  if (edit) edit.style.display = 'none';
+}
+async function saveLeadEdit(id) {
+  const body = {};
+  const fields = ['name','phone','email','website','address','city','state','industry','rating','reviews','website_platform','website_status','tags','business_hours'];
+  for (const f of fields) {
+    const el = document.getElementById(`le-${id}-${f==='website_platform'?'platform':f==='website_status'?'status':f==='business_hours'?'hours':f}`);
+    if (el) {
+      let v = el.value.trim();
+      if (f === 'tags') {
+        const arr = v.split(',').map(s => s.trim()).filter(Boolean);
+        v = JSON.stringify(arr);
+      }
+      if (f === 'rating' || f === 'reviews') {
+        v = v === '' ? null : +v;
+      }
+      body[f] = v;
+    }
+  }
+  try {
+    await api(`/api/admin/leads/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+    // Refresh cached detail data
+    const l = leadDetailCache.get(id);
+    if (l) {
+      for (const [k, v] of Object.entries(body)) if (v !== undefined) l[k] = v;
+    }
+    // Re-render detail view
+    const detailTd = document.querySelector('#lead-detail-'+id+' td');
+    if (detailTd) {
+      const updated = leadDetailCache.get(id);
+      if (updated) detailTd.innerHTML = renderLeadDetail(updated);
+    }
+    // Refresh the lead row text in-place so it matches without full reload
+    loadCurrent();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  }
 }
 
 function showView(v) {
@@ -961,10 +1045,9 @@ async function massSaveSettings() {
 }
 
 // ============== LEADS VIEW ==============
-let leadsQuery = '', leadsIndustry = '', leadsState = '', leadsOffset = 0;
+let leadsQuery = '', leadsIndustry = '', leadsState = '', leadsCity = '', leadsGhlSynced = '', leadsTags = '', leadsOffset = 0, leadsPageSize = 100;
 let leadsSearchTimer = null;
 let leadsLoading = false;
-const LEADS_PAGE = 100;
 const leadDetailCache = new Map();
 
 async function renderLeads() {
@@ -973,7 +1056,10 @@ async function renderLeads() {
   if (leadsQuery) qs.set('q', leadsQuery);
   if (leadsIndustry) qs.set('industry', leadsIndustry);
   if (leadsState) qs.set('state', leadsState);
-  qs.set('limit', LEADS_PAGE); qs.set('offset', leadsOffset);
+  if (leadsCity) qs.set('city', leadsCity);
+  if (leadsGhlSynced) qs.set('ghlSynced', leadsGhlSynced);
+  if (leadsTags) qs.set('tags', leadsTags);
+  qs.set('limit', leadsPageSize); qs.set('offset', leadsOffset);
 
   // Show loading skeleton if this is a fresh search (offset 0)
   if (leadsOffset === 0) {
@@ -993,7 +1079,7 @@ async function renderLeads() {
   // Cache lead data for lazy detail rendering
   for (const l of r.leads) leadDetailCache.set(l.id, l);
 
-  const totalText = r.total >= 10001 ? '10,000+' : r.total.toLocaleString();
+  const totalText = r.total.toLocaleString();
   const note = r.note ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(r.note)}</div>` : '';
 
   $('app').innerHTML = `
@@ -1025,6 +1111,35 @@ async function renderLeads() {
         <div style="width:100px">
           <label>State</label>
           <input id="l-state" value="${esc(leadsState)}" placeholder="FL" onchange="applyLeadFilters()">
+        </div>
+        <div style="width:140px">
+          <label>City</label>
+          <input id="l-city" value="${esc(leadsCity)}" placeholder="Miami" onchange="applyLeadFilters()">
+        </div>
+        <div style="width:140px">
+          <label>GHL Synced</label>
+          <select id="l-ghl" onchange="applyLeadFilters()">
+            <option value="" ${!leadsGhlSynced?'selected':''}>Any</option>
+            <option value="true" ${leadsGhlSynced==='true'?'selected':''}>Synced</option>
+            <option value="false" ${leadsGhlSynced==='false'?'selected':''}>Unsynced</option>
+          </select>
+        </div>
+        <div style="width:160px">
+          <label>Tag</label>
+          <select id="l-tags" onchange="applyLeadFilters()">
+            <option value="" ${!leadsTags?'selected':''}>Any tag</option>
+          </select>
+        </div>
+        <div style="width:110px">
+          <label>Per Page</label>
+          <select id="l-pagesize" onchange="applyLeadFilters()">
+            <option value="100" ${leadsPageSize===100?'selected':''}>100</option>
+            <option value="250" ${leadsPageSize===250?'selected':''}>250</option>
+            <option value="500" ${leadsPageSize===500?'selected':''}>500</option>
+            <option value="1000" ${leadsPageSize===1000?'selected':''}>1000</option>
+            <option value="2500" ${leadsPageSize===2500?'selected':''}>2500</option>
+            <option value="5000" ${leadsPageSize===5000?'selected':''}>5000</option>
+          </select>
         </div>
         <button class="primary" onclick="applyLeadFilters()">Apply</button>
         <button onclick="clearLeadFilters()">Clear</button>
@@ -1061,16 +1176,32 @@ async function renderLeads() {
         </table>
       </div>
       <div style="padding:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-        <span class="muted">Showing ${leadsOffset+1}–${leadsOffset+r.leads.length}${r.total>=10001?' of 10,000+':' of '+r.total.toLocaleString()}</span>
+        <span class="muted">Showing ${leadsOffset+1}–${leadsOffset+r.leads.length} of ${totalText}</span>
         <div>
-          <button ${leadsOffset<=0?'disabled':''} onclick="leadsOffset=Math.max(0,leadsOffset-${LEADS_PAGE});loadCurrent()">← Prev</button>
-          <button ${(r.has_more===false || (!r.has_more && leadsOffset+LEADS_PAGE>=r.total))?'disabled':''} onclick="leadsOffset+=${LEADS_PAGE};loadCurrent()">Next →</button>
+          <button ${leadsOffset<=0?'disabled':''} onclick="leadsOffset=Math.max(0,leadsOffset-leadsPageSize);loadCurrent()">← Prev</button>
+          <button ${(r.has_more===false || (!r.has_more && leadsOffset+leadsPageSize>=r.total))?'disabled':''} onclick="leadsOffset+=leadsPageSize;loadCurrent()">Next →</button>
         </div>
       </div>
     </div>
   `;
   setTimeout(() => {
     initIndustryPicker('l-industry', 'l-industry-dropdown', (name) => { leadsIndustry = name; });
+    // Populate tags dropdown from meta endpoint
+    api('/api/admin/leads/meta').then(m => {
+      const sel = document.getElementById('l-tags');
+      if (sel && m.tags) {
+        // Keep the first "Any tag" option
+        const first = sel.options[0];
+        sel.innerHTML = '';
+        sel.appendChild(first);
+        for (const t of m.tags) {
+          const o = document.createElement('option');
+          o.value = t; o.textContent = t;
+          if (leadsTags === t) o.selected = true;
+          sel.appendChild(o);
+        }
+      }
+    }).catch(()=>{});
     pollRecat();
   }, 200);
 }
@@ -1088,19 +1219,18 @@ function applyLeadFilters() {
   leadsQuery = ($('l-q')?.value || '').trim();
   leadsIndustry = ($('l-industry')?.value || '').trim();
   leadsState = ($('l-state')?.value || '').trim();
+  leadsCity = ($('l-city')?.value || '').trim();
+  leadsGhlSynced = ($('l-ghl')?.value || '');
+  leadsTags = ($('l-tags')?.value || '');
+  leadsPageSize = Math.max(100, Math.min(5000, +($('l-pagesize')?.value || 100)));
   leadsOffset = 0;
   if (leadsSearchTimer) clearTimeout(leadsSearchTimer);
   loadCurrent();
 }
 function clearLeadFilters() {
-  leadsQuery = leadsIndustry = leadsState = ''; leadsOffset = 0; loadCurrent();
-}
-function exportLeads() {
-  const qs = new URLSearchParams();
-  if (leadsIndustry) qs.set('industry', leadsIndustry);
-  if (leadsState) qs.set('state', leadsState);
-  qs.set('token', token);
-  window.open('/api/admin/leads/export?' + qs, '_blank');
+  leadsQuery = leadsIndustry = leadsState = leadsCity = leadsGhlSynced = leadsTags = '';
+  leadsPageSize = 100; leadsOffset = 0;
+  loadCurrent();
 }
 function copy(text) { navigator.clipboard.writeText(text); }
 
@@ -1659,8 +1789,12 @@ async function runImport() {
   // server doesn't currently accept ?token — patch by using fetch + blob
   window.exportLeads = async function() {
     const qs = new URLSearchParams();
+    if (leadsQuery) qs.set('q', leadsQuery);
     if (leadsIndustry) qs.set('industry', leadsIndustry);
     if (leadsState) qs.set('state', leadsState);
+    if (leadsCity) qs.set('city', leadsCity);
+    if (leadsGhlSynced) qs.set('ghlSynced', leadsGhlSynced);
+    if (leadsTags) qs.set('tags', leadsTags);
     try {
       const res = await fetch('/api/admin/leads/export?' + qs, { headers: { 'x-admin-token': token } });
       const blob = await res.blob();

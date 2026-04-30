@@ -421,7 +421,7 @@ app.post('/api/admin/jobs/clear-finished', requireAdmin, (req, res) => {
 
 // Search / filter leads
 app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
-  const { q = '', industry, gcid, state, city, ghlSynced, hasPhone, limit = 100, offset = 0 } = req.query;
+  const { q = '', industry, gcid, state, city, ghlSynced, hasPhone, tags, limit = 100, offset = 0 } = req.query;
   const where = [];
   const params = [];
 
@@ -451,6 +451,7 @@ app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
   if (ghlSynced === 'true')  where.push(`ghl_synced = 1`);
   if (ghlSynced === 'false') where.push(`(ghl_synced IS NULL OR ghl_synced = 0)`);
   if (hasPhone === 'true')   where.push(`phone IS NOT NULL AND phone != ''`);
+  if (tags)     { where.push(`tags LIKE ?`);  params.push(`%"${tags}"%`); }
 
   const whereClause = where.length ? 'WHERE '+where.join(' AND ') : '';
 
@@ -466,27 +467,44 @@ app.get('/api/admin/leads/search', requireAdmin, (req, res) => {
   const hasMore = rows.length > limit;
   if (hasMore) rows.pop(); // trim the extra row
 
-  // Capped count: for unfiltered loads use fast COUNT; for text searches skip the
-  // expensive subquery-count and just return the capped limit so the UI shows "10,000+".
-  let total = 0;
-  if (!qTrim) {
-    const totalRow = db.prepare(`SELECT COUNT(*) AS c FROM leads ${whereClause}`).get(...params.slice(0, -2));
-    total = totalRow.c;
-  } else {
-    total = 10001; // signals "10,000+" to the UI; actual count is not worth the scan
-  }
+  // Accurate total count for all filters (needed so the UI can show real pagination)
+  const totalRow = db.prepare(`SELECT COUNT(*) AS c FROM leads ${whereClause}`).get(...params.slice(0, -2));
+  const total = totalRow ? totalRow.c : 0;
   res.json({ leads: rows, total, has_more: hasMore });
 });
 
-// CSV export
+// CSV export — supports the same filters as /search so the UI can export filtered selections
 app.get('/api/admin/leads/export', requireAdmin, (req, res) => {
-  const { industry, gcid, state, limit = 100000 } = req.query;
+  const { q = '', industry, gcid, state, city, ghlSynced, hasPhone, tags, limit = 100000 } = req.query;
   const where = [];
   const params = [];
+
+  const qTrim = String(q).trim();
+  if (qTrim.length === 1) {
+    return res.status(400).json({ error: 'Search requires at least 2 characters' });
+  }
+  if (qTrim) {
+    const isPhoneLike = /^[\d\s\-\(\)\+\.]+$/.test(qTrim);
+    if (isPhoneLike) {
+      where.push(`phone LIKE ?`);
+      params.push(`${qTrim}%`);
+    } else {
+      where.push(`(name LIKE ? OR phone LIKE ? OR email LIKE ? OR website LIKE ? OR address LIKE ?)`);
+      const qq = `%${qTrim}%`;
+      params.push(qq, qq, qq, qq, qq);
+    }
+  }
   if (industry) { where.push('industry = ?'); params.push(industry); }
   if (gcid)     { where.push('gcid = ?');     params.push(gcid); }
   if (state)    { where.push('state = ?');    params.push(state); }
-  const rows = db.prepare(`SELECT * FROM leads ${where.length ? 'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT ?`).all(...params, +limit);
+  if (city)     { where.push('city LIKE ?');  params.push(`%${city}%`); }
+  if (ghlSynced === 'true')  where.push(`ghl_synced = 1`);
+  if (ghlSynced === 'false') where.push(`(ghl_synced IS NULL OR ghl_synced = 0)`);
+  if (hasPhone === 'true')   where.push(`phone IS NOT NULL AND phone != ''`);
+  if (tags)     { where.push(`tags LIKE ?`);  params.push(`%"${tags}"%`); }
+
+  const whereClause = where.length ? 'WHERE '+where.join(' AND ') : '';
+  const rows = db.prepare(`SELECT * FROM leads ${whereClause} ORDER BY id DESC LIMIT ?`).all(...params, +limit);
   const cols = ['name','phone','email','website','address','city','state','industry','gcid','rating','reviews','website_platform','website_status','tags','business_hours','reviews_1star','reviews_2star','reviews_3star','reviews_4star','reviews_5star','ai_seo_score','ai_design_score','ai_seo_notes','ai_design_notes','ai_provider','ai_analyzed_at'];
   const esc = v => v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
   let csv = cols.join(',') + '\n';
@@ -494,6 +512,24 @@ app.get('/api/admin/leads/export', requireAdmin, (req, res) => {
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="fleet-leads-${Date.now()}.csv"`);
   res.send(csv);
+});
+
+// Update a single lead
+app.patch('/api/admin/leads/:id', requireAdmin, (req, res) => {
+  const id = +req.params.id;
+  const allowed = ['name','phone','email','website','address','city','state','industry','gcid','rating','reviews','website_platform','website_status','tags','business_hours','reviews_1star','reviews_2star','reviews_3star','reviews_4star','reviews_5star','ai_seo_score','ai_design_score','ai_seo_notes','ai_design_notes','ai_provider'];
+  const fields = [];
+  const vals = [];
+  for (const [k, v] of Object.entries(req.body || {})) {
+    if (allowed.includes(k)) {
+      fields.push(`${k}=?`);
+      vals.push(v);
+    }
+  }
+  if (!fields.length) return res.json({ ok: true });
+  vals.push(id);
+  db.prepare(`UPDATE leads SET ${fields.join(', ')} WHERE id=?`).run(...vals);
+  res.json({ ok: true });
 });
 
 // CSV / JSON import — mirrors export format
