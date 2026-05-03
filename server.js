@@ -556,6 +556,7 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
   let inserted = 0, skipped = 0;
   const txn = db.transaction(() => {
     for (const l of leads) {
+      if (!isUSState(l.state)) { skipped++; continue; }
       const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' && l.tags.trim().startsWith('[') ? JSON.parse(l.tags) : []);
       const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
       const tagsSet = new Set(baseTags);
