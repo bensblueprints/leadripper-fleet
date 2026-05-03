@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const db = require('./db');
+const countryDb = require('./db-country');
 const massSeed = require('./mass-scrape/seed');
 const massScheduler = require('./mass-scrape/scheduler');
 const ghlSync = require('./ghl-sync');
@@ -156,6 +157,23 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
   if (!job) return res.status(404).json({ error: 'job not found' });
 
   const t = now();
+
+  // Group leads by country so we can insert into the right DB
+  const usLeads = [];
+  const countryBatches = {}; // country -> {db, leads[]}
+  let skipped = 0;
+  for (const l of leads) {
+    const nm = (l.name || l.business_name || '').toString().trim();
+    if (!nm) { skipped++; continue; }
+    const { db: cdb, country } = countryDb.getDbForLead({ ...l, state: l.state || job.state });
+    if (country === 'USA') {
+      usLeads.push(l);
+    } else {
+      if (!countryBatches[country]) countryBatches[country] = { db: cdb, leads: [] };
+      countryBatches[country].leads.push(l);
+    }
+  }
+
   const insertLead = db.prepare(`
     INSERT OR IGNORE INTO leads (job_id, node_id, name, phone, email, website, address, city, state,
       industry, gcid, search_term, google_category_raw, rating, reviews,
@@ -166,16 +184,9 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  let skipped = 0;
   const txn = db.transaction(() => {
-    for (const l of leads) {
-      // Defense-in-depth: never persist a lead without a business name —
-      // older workers had a field-mapping bug (scraper emits business_name,
-      // worker was reading l.name) that poisoned thousands of rows.
+    for (const l of usLeads) {
       const nm = (l.name || l.business_name || '').toString().trim();
-      if (!nm) { skipped++; continue; }
-      const leadState = (l.state || job.state || '').toString().trim();
-      if (!isUSState(leadState)) { skipped++; continue; }
       const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' ? JSON.parse(l.tags) : []);
       const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
       const tagsSet = new Set(baseTags);
@@ -196,14 +207,14 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
     }
     db.prepare(`
       UPDATE jobs SET status=?, finished_at=?, leads_found=?, error=? WHERE id=?
-    `).run(error ? 'failed' : 'done', t, leads.length, error, job.id);
+    `).run(error ? 'failed' : 'done', t, leads.length - skipped, error, job.id);
     db.prepare(`
       UPDATE nodes SET current_job_id=NULL,
                        status='idle',
                        jobs_done=jobs_done+1,
                        leads_harvested=leads_harvested+?
       WHERE id=?
-    `).run(leads.length, node.id);
+    `).run(leads.length - skipped, node.id);
     // Mass-scrape coverage: if this job came from the orchestrator, flip the row
     db.prepare(
       `UPDATE scrape_coverage
@@ -212,9 +223,50 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
            last_error = ?,
            completed_at = ?
        WHERE job_id = ?`
-    ).run(error, leads.length, error, t, job.id);
+    ).run(error, leads.length - skipped, error, t, job.id);
   });
   txn();
+
+  // Insert non-US leads into their country DBs (outside main txn)
+  for (const [country, batch] of Object.entries(countryBatches)) {
+    try {
+      const cdb = batch.db;
+      const cins = cdb.prepare(`
+        INSERT OR IGNORE INTO leads (job_id, node_id, name, phone, email, website, address, city, state,
+          industry, gcid, search_term, google_category_raw, rating, reviews,
+          website_platform, website_status, tags, business_hours,
+          reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
+          ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_analyzed_at, ai_provider,
+          created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const ctxn = cdb.transaction(() => {
+        for (const l of batch.leads) {
+          const nm = (l.name || l.business_name || '').toString().trim();
+          const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' ? JSON.parse(l.tags) : []);
+          const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
+          const tagsSet = new Set(baseTags);
+          if (industryTag) tagsSet.add(industryTag);
+          const tagsJson = JSON.stringify([...tagsSet]);
+          cins.run(job.id, node.id,
+            nm, l.phone || null, l.email || null, l.website || null,
+            l.address || null, l.city || job.city, l.state || job.state,
+            l.industry || null, l.gcid || null, l.search_term || job.industry,
+            l.google_category_raw || null, l.rating || null, l.reviews || null,
+            l.website_platform || null, l.website_status || 'unchecked', tagsJson, l.business_hours || null,
+            +(l.reviews_1star||0), +(l.reviews_2star||0), +(l.reviews_3star||0), +(l.reviews_4star||0), +(l.reviews_5star||0),
+            l.ai_seo_score == null ? null : +l.ai_seo_score,
+            l.ai_design_score == null ? null : +l.ai_design_score,
+            l.ai_seo_notes || null, l.ai_design_notes || null,
+            l.ai_analyzed_at || null, l.ai_provider || null,
+            t);
+        }
+      });
+      ctxn();
+    } catch (e) {
+      console.error(`[country-db] ${country} insert failed:`, e.message);
+    }
+  }
 
   res.json({ ok: true, saved: leads.length - skipped, skipped });
 });
@@ -258,7 +310,23 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
   const node = db.prepare('SELECT id FROM nodes WHERE machine_id = ?').get(req.machineId);
   const nodeId = node?.id || null;
 
-  // Use INSERT OR IGNORE against unique (phone, industry) to dedupe across fleet
+  const t = now();
+
+  // Route by country
+  const usLeads = [];
+  const countryBatches = {};
+  let skipped = 0;
+  for (const l of leads) {
+    const { db: cdb, country } = countryDb.getDbForLead(l);
+    if (country === 'USA') {
+      usLeads.push(l);
+    } else {
+      if (!countryBatches[country]) countryBatches[country] = { db: cdb, leads: [] };
+      countryBatches[country].leads.push(l);
+    }
+  }
+
+  let inserted = 0;
   const ins = db.prepare(`
     INSERT OR IGNORE INTO leads
       (job_id, node_id, name, phone, email, website, address, city, state,
@@ -270,11 +338,8 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
     VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const t = now();
-  let inserted = 0, skipped = 0;
   const txn = db.transaction(() => {
-    for (const l of leads) {
-      if (!isUSState(l.state)) { skipped++; continue; }
+    for (const l of usLeads) {
       const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' ? l.tags : '[]');
       const r = ins.run(nodeId,
         l.name || null, l.phone || null, l.email || null, l.website || null,
@@ -297,6 +362,50 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
     }
   });
   txn();
+
+  // Insert non-US leads into country DBs
+  for (const [country, batch] of Object.entries(countryBatches)) {
+    try {
+      const cdb = batch.db;
+      const cins = cdb.prepare(`
+        INSERT OR IGNORE INTO leads
+          (job_id, node_id, name, phone, email, website, address, city, state,
+           industry, gcid, search_term, google_category_raw, rating, reviews,
+           website_platform, website_status, tags, business_hours,
+           reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
+           ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_analyzed_at, ai_provider,
+           ghl_synced, ghl_contact_id, created_at)
+        VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      let cInserted = 0;
+      const ctxn = cdb.transaction(() => {
+        for (const l of batch.leads) {
+          const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' ? l.tags : '[]');
+          const r = cins.run(nodeId,
+            l.name || null, l.phone || null, l.email || null, l.website || null,
+            l.address || null, l.city || null, l.state || null,
+            l.industry || null, l.gcid || null, l.search_term || l.industry || null,
+            l.google_category_raw || null, l.rating || null, l.reviews || null,
+            l.website_platform || null, l.website_status || 'unchecked', tagsJson, l.business_hours || null,
+            +(l.reviews_1star||0), +(l.reviews_2star||0), +(l.reviews_3star||0), +(l.reviews_4star||0), +(l.reviews_5star||0),
+            l.ai_seo_score == null ? null : +l.ai_seo_score,
+            l.ai_design_score == null ? null : +l.ai_design_score,
+            l.ai_seo_notes || null, l.ai_design_notes || null,
+            l.ai_analyzed_at || null, l.ai_provider || null,
+            l.ghl_synced == null ? 0 : +l.ghl_synced,
+            l.ghl_contact_id || null,
+            t);
+          if (r.changes) cInserted++; else skipped++;
+        }
+      });
+      ctxn();
+      inserted += cInserted;
+      db.prepare(`UPDATE nodes SET leads_harvested=leads_harvested+? WHERE id=?`).run(cInserted, nodeId);
+    } catch (e) {
+      console.error(`[country-db] sync-leads ${country} failed:`, e.message);
+    }
+  }
+
   res.json({ ok: true, inserted, skipped });
 });
 
@@ -351,11 +460,17 @@ app.get('/api/admin/stats', requireAdmin, (req, res) => {
       SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS done,
       SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
     FROM jobs`).get();
-  const leads = db.prepare(`SELECT COUNT(*) AS total FROM leads`).get();
-  const today = db.prepare(`
-    SELECT COUNT(*) AS c FROM leads WHERE created_at > ?
-  `).get(Math.floor(Date.now() / 1000) - 86400);
-  res.json({ nodes, jobs, leads_total: leads.total, leads_24h: today.c });
+  let leadsTotal = db.prepare(`SELECT COUNT(*) AS total FROM leads`).get().total;
+  let leads24h = db.prepare(`SELECT COUNT(*) AS c FROM leads WHERE created_at > ?`).get(Math.floor(Date.now() / 1000) - 86400).c;
+  for (const cdb of countryDb.listCountryDbs()) {
+    try {
+      const c = new (require('better-sqlite3'))(cdb.path);
+      leadsTotal += c.prepare(`SELECT COUNT(*) AS total FROM leads`).get().total;
+      leads24h += c.prepare(`SELECT COUNT(*) AS c FROM leads WHERE created_at > ?`).get(Math.floor(Date.now() / 1000) - 86400).c;
+      c.close();
+    } catch {}
+  }
+  res.json({ nodes, jobs, leads_total: leadsTotal, leads_24h: leads24h });
 });
 
 // Dispatch jobs. Batches cities into multi-city jobs (default 50 per job) so workers
@@ -542,6 +657,24 @@ app.patch('/api/admin/leads/:id', requireAdmin, (req, res) => {
 app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
   const { leads = [] } = req.body || {};
   if (!Array.isArray(leads) || !leads.length) return res.status(400).json({ error: 'leads[] required' });
+  const t = now();
+  const toInt = v => (v == null || v === '') ? null : (Number.isFinite(+v) ? +v : null);
+
+  // Route by country
+  const usLeads = [];
+  const countryBatches = {};
+  let skipped = 0;
+  for (const l of leads) {
+    const { db: cdb, country } = countryDb.getDbForLead(l);
+    if (country === 'USA') {
+      usLeads.push(l);
+    } else {
+      if (!countryBatches[country]) countryBatches[country] = { db: cdb, leads: [] };
+      countryBatches[country].leads.push(l);
+    }
+  }
+
+  let inserted = 0;
   const ins = db.prepare(`
     INSERT OR IGNORE INTO leads (name, phone, email, website, address, city, state,
       industry, gcid, search_term, google_category_raw, rating, reviews,
@@ -551,12 +684,9 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
       created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const t = now();
-  const toInt = v => (v == null || v === '') ? null : (Number.isFinite(+v) ? +v : null);
-  let inserted = 0, skipped = 0;
+
   const txn = db.transaction(() => {
-    for (const l of leads) {
-      if (!isUSState(l.state)) { skipped++; continue; }
+    for (const l of usLeads) {
       const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' && l.tags.trim().startsWith('[') ? JSON.parse(l.tags) : []);
       const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
       const tagsSet = new Set(baseTags);
@@ -592,6 +722,62 @@ app.post('/api/admin/leads/import', requireAdmin, (req, res) => {
     }
   });
   txn();
+
+  // Insert non-US leads into country DBs
+  for (const [country, batch] of Object.entries(countryBatches)) {
+    try {
+      const cdb = batch.db;
+      const cins = cdb.prepare(`
+        INSERT OR IGNORE INTO leads (name, phone, email, website, address, city, state,
+          industry, gcid, search_term, google_category_raw, rating, reviews,
+          website_platform, website_status, tags, business_hours,
+          reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
+          ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_provider, ai_analyzed_at,
+          created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const ctxn = cdb.transaction(() => {
+        for (const l of batch.leads) {
+          const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' && l.tags.trim().startsWith('[') ? JSON.parse(l.tags) : []);
+          const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
+          const tagsSet = new Set(baseTags);
+          if (industryTag) tagsSet.add(industryTag);
+          const tagsJson = JSON.stringify([...tagsSet]);
+          const r = cins.run(
+            l.name || l.business_name || null,
+            l.phone || null, l.email || null, l.website || null,
+            l.address || null, l.city || null, l.state || null,
+            l.industry || null, l.gcid || null,
+            l.search_term || l.industry || null,
+            l.google_category_raw || null,
+            l.rating == null || l.rating === '' ? null : +l.rating,
+            l.reviews == null || l.reviews === '' ? null : +l.reviews,
+            l.website_platform || null,
+            l.website_status || 'unchecked',
+            tagsJson,
+            l.business_hours || null,
+            toInt(l.reviews_1star) || 0,
+            toInt(l.reviews_2star) || 0,
+            toInt(l.reviews_3star) || 0,
+            toInt(l.reviews_4star) || 0,
+            toInt(l.reviews_5star) || 0,
+            toInt(l.ai_seo_score),
+            toInt(l.ai_design_score),
+            l.ai_seo_notes || null,
+            l.ai_design_notes || null,
+            l.ai_provider || null,
+            toInt(l.ai_analyzed_at),
+            t
+          );
+          if (r.changes) inserted++; else skipped++;
+        }
+      });
+      ctxn();
+    } catch (e) {
+      console.error(`[country-db] import ${country} failed:`, e.message);
+    }
+  }
+
   res.json({ ok: true, inserted, skipped, total: leads.length });
 });
 
@@ -1243,6 +1429,16 @@ app.get('/api/downloads/fleet-worker/download/:file', (req, res) => {
   const fp = path.join(FW_RELEASES_DIR, name);
   if (!fs.existsSync(fp)) return res.status(404).json({ error: 'not found' });
   res.sendFile(path.resolve(fp));
+});
+
+// Country DBs listing
+app.get('/api/admin/countries', requireAdmin, (req, res) => {
+  const list = countryDb.listCountryDbs().map(c => ({
+    country: c.file.replace('fleet-', '').replace('.db', '').toUpperCase(),
+    file: c.file,
+    size_bytes: c.size
+  }));
+  res.json({ countries: list });
 });
 
 // ==================== STATIC ====================

@@ -1,0 +1,11 @@
+{
+  "version": "1.0.2",
+  "notes": "US-only enforcement: Google Maps searches now append ', USA'. Server rejects non-US state leads.",
+  "assets": {
+    "windows": "FleetWorker-Windows.zip",
+    "macos_zip": "FleetWorker-macOS-v1.0.2.zip",
+    "dmg": "FleetWorker-v1.0.0.dmg",
+    "pkg": "FleetWorker-1.0.0.pkg"
+  },
+  "published_at": 1777860613
+}
