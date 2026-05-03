@@ -67,16 +67,15 @@ function detectCountry(lead) {
   if (COUNTRY_MAP.CANADA.has(state)) return 'CANADA';
   if (COUNTRY_MAP.AUSTRALIA.has(state)) return 'AUSTRALIA';
 
-  // UK heuristics
-  if (UK_CITIES.has(city)) return 'UK';
-  if (UK_INDUSTRIES.has(industry)) return 'UK';
-  if (address.includes('united kingdom') || address.includes(', uk') || /\b[A-Z]{1,2}\d[A-Z\d]? \d[A-Z]{2}\b/i.test(address)) return 'UK';
+  // UK heuristics — require empty/null state AND at least one strong indicator
+  const hasUKPostcode = /\b[A-Z]{1,2}\d[A-Z\d]? \d[A-Z]{2}\b/i.test(address);
+  const hasUKAddress = address.includes('united kingdom') || address.includes(', uk');
+  const hasUKIndustry = UK_INDUSTRIES.has(industry);
+  const hasUKName = /\b(ltd|limited|llp)\b/i.test(lead.name || '');
+  if (state === '' && (hasUKPostcode || hasUKAddress || hasUKIndustry || hasUKName)) return 'UK';
 
-  // Empty state with no US indicators → likely international
+  // Empty state with no clear indicators → other international
   if (state === '' && city && city.length > 1) {
-    // If it looks like it could be UK based on patterns
-    if (/^(ltd|limited)\b/i.test(lead.name || '')) return 'UK';
-    if (industry.includes('gas engineer')) return 'UK';
     return 'OTHER';
   }
 
