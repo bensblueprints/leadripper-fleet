@@ -18,6 +18,9 @@ const ADMIN_PASSWORD = '2TQmwZePcT5k-PBcpY8k4YwPEG3dtNzP';
 
 function now() { return Math.floor(Date.now() / 1000); }
 
+const US_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
+function isUSState(state) { return US_STATES.has((state || '').toString().toUpperCase()); }
+
 // ---- admin auth middleware ----
 function requireAdmin(req, res, next) {
   const auth = req.headers['x-admin-token'] || req.headers['x-password'] || req.query.token || req.query.password;
@@ -171,6 +174,8 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
       // worker was reading l.name) that poisoned thousands of rows.
       const nm = (l.name || l.business_name || '').toString().trim();
       if (!nm) { skipped++; continue; }
+      const leadState = (l.state || job.state || '').toString().trim();
+      if (!isUSState(leadState)) { skipped++; continue; }
       const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' ? JSON.parse(l.tags) : []);
       const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
       const tagsSet = new Set(baseTags);
@@ -269,6 +274,7 @@ app.post('/api/fleet/sync-leads', requireWorker, (req, res) => {
   let inserted = 0, skipped = 0;
   const txn = db.transaction(() => {
     for (const l of leads) {
+      if (!isUSState(l.state)) { skipped++; continue; }
       const tagsJson = Array.isArray(l.tags) ? JSON.stringify(l.tags) : (typeof l.tags === 'string' ? l.tags : '[]');
       const r = ins.run(nodeId,
         l.name || null, l.phone || null, l.email || null, l.website || null,

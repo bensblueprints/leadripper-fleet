@@ -108,7 +108,7 @@ async function scrapeGoogleMaps(query, maxResults = 20) {
 
     const page = await context.newPage();
 
-    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
+    const searchUrl = `https://www.google.com/maps/search/${encodeURIComponent(query + ', USA')}`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Accept cookies if prompted
