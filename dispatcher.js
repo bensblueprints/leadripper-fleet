@@ -47,10 +47,13 @@ function tick(db, { logger = () => {} } = {}) {
     return { skipped: 'exhausted' };
   }
 
-  const inflightStmt = db.prepare(
-    `SELECT COUNT(*) AS c FROM jobs
-     WHERE target_node_id = ? AND status IN ('queued','running')`
-  );
+  const globalInflight = db.prepare(
+    `SELECT COUNT(*) AS c FROM jobs WHERE status IN ('queued','running')`
+  ).get().c;
+  const globalCap = cap * liveNodes.length;
+  let slots = Math.max(0, globalCap - globalInflight);
+  if (slots <= 0) return { skipped: 'queue-full', inflight: globalInflight, cap: globalCap };
+
   const completedStmt = db.prepare(
     `SELECT 1 FROM jobs_completed WHERE industry_id = ? AND city_id = ? AND status = 'done'`
   );
@@ -61,65 +64,55 @@ function tick(db, { logger = () => {} } = {}) {
   // Single-city job (used when batch collapses to 1 or as fallback)
   const insertJob = db.prepare(
     `INSERT INTO jobs (industry, city, state, target_node_id, priority, status, max_results, industry_id, city_id, created_at)
-     VALUES (?, ?, ?, ?, 2, 'queued', 200, ?, ?, ?)`
+     VALUES (?, ?, ?, NULL, 2, 'queued', 200, ?, ?, ?)`
   );
-  // Multi-city batch job — workers process all cities in parallel up to CITY_CONCURRENCY
   const insertBatchJob = db.prepare(
     `INSERT INTO jobs (industry, city, cities, state, target_node_id, priority, status, max_results, industry_id, city_id, created_at)
-     VALUES (?, ?, ?, ?, ?, 2, 'queued', 200, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, NULL, 2, 'queued', 200, ?, ?, ?)`
   );
 
   let totalDispatched = 0;
   const startCursor = cursor;
   const txn = db.transaction(() => {
     const t = nowSec();
-    for (const node of liveNodes) {
-      const inflight = inflightStmt.get(node.id).c;
-      let slots = cap - inflight;
-      if (slots <= 0) continue;
+    while (slots > 0 && cursor < total) {
+      const batchCities = [];
+      let batchInd = null;
 
-      while (slots > 0 && cursor < total) {
-        // City-major traversal: cities vary fastest within each industry.
-        // Consecutive cursor positions share the same industry, enabling N-city batch jobs.
-        const batchCities = [];
-        let batchInd = null;
-
-        while (batchCities.length < citiesPerJob && cursor < total) {
-          const cityIdx = cursor % cities.length;
-          const indIdx = Math.floor(cursor / cities.length);
-          const ind = industries[indIdx];
-          const city = cities[cityIdx];
-          cursor++;
-          if (!ind || !city) continue;
-          // Stop batch at industry boundary so each job is a single industry
-          if (batchInd && ind.id !== batchInd.id) {
-            cursor--; // back up so next outer iteration starts with the new industry
-            break;
-          }
-          batchInd = ind;
-          const done = completedStmt.get(ind.id, city.id);
-          if (!done) batchCities.push(city);
+      while (batchCities.length < citiesPerJob && cursor < total) {
+        const cityIdx = cursor % cities.length;
+        const indIdx = Math.floor(cursor / cities.length);
+        const ind = industries[indIdx];
+        const city = cities[cityIdx];
+        cursor++;
+        if (!ind || !city) continue;
+        if (batchInd && ind.id !== batchInd.id) {
+          cursor--;
+          break;
         }
-
-        if (!batchInd || batchCities.length === 0) continue;
-
-        if (batchCities.length === 1) {
-          insertJob.run(batchInd.name, batchCities[0].city, batchCities[0].state, node.id, batchInd.id, batchCities[0].id, t);
-        } else {
-          const first = batchCities[0];
-          const cityList = JSON.stringify(batchCities.map(c => `${c.city}, ${c.state}`));
-          insertBatchJob.run(batchInd.name, first.city, cityList, first.state, node.id, batchInd.id, first.id, t);
-        }
-        slots--;
-        totalDispatched++;
+        batchInd = ind;
+        const done = completedStmt.get(ind.id, city.id);
+        if (!done) batchCities.push(city);
       }
+
+      if (!batchInd || batchCities.length === 0) continue;
+
+      if (batchCities.length === 1) {
+        insertJob.run(batchInd.name, batchCities[0].city, batchCities[0].state, batchInd.id, batchCities[0].id, t);
+      } else {
+        const first = batchCities[0];
+        const cityList = JSON.stringify(batchCities.map(c => `${c.city}, ${c.state}`));
+        insertBatchJob.run(batchInd.name, first.city, cityList, first.state, batchInd.id, first.id, t);
+      }
+      slots--;
+      totalDispatched++;
     }
     setSetting(db, 'dispatch_cursor', String(cursor));
   });
   txn();
 
   if (totalDispatched > 0) {
-    logger(`[dispatch] tick +${totalDispatched} jobs (${citiesPerJob} cities/job) across ${liveNodes.length} workers (cursor ${startCursor}→${cursor}/${total})`);
+    logger(`[dispatch] tick +${totalDispatched} jobs (${citiesPerJob} cities/job) global slots ${globalCap - totalDispatched}/${globalCap} (cursor ${startCursor}→${cursor}/${total})`);
   }
   return { dispatched: totalDispatched, workers: liveNodes.length, cursor, total };
 }
