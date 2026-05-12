@@ -937,7 +937,12 @@ app.post('/api/admin/nodes/:id/resume', requireAdmin, (req, res) => {
 app.post('/api/admin/nodes/:id/kill', requireAdmin, (req, res) => {
   const id = +req.params.id;
   db.prepare(`INSERT INTO commands (node_id, kind, payload) VALUES (?, 'kill', NULL)`).run(id);
-  res.json({ ok: true });
+  // Immediately requeue any running jobs assigned to this node so other workers can pick them up
+  const requeued = db.prepare(
+    `UPDATE jobs SET status='queued', assigned_node_id=NULL, started_at=NULL
+     WHERE assigned_node_id=? AND status='running'`
+  ).run(id).changes;
+  res.json({ ok: true, requeued });
 });
 
 app.patch('/api/admin/nodes/:id', requireAdmin, (req, res) => {
