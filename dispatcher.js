@@ -19,8 +19,11 @@ let _cache = null;
 function loadLookup(db, force = false) {
   if (_cache && !force) return _cache;
   const filterTop = getSetting(db, "dispatch_top100_only", "0") === "1";
-  const industries = db.prepare(filterTop ? "SELECT id, gcid, name FROM industries WHERE priority=1 ORDER BY id" : "SELECT id, gcid, name FROM industries ORDER BY id").all();
-  const cities = db.prepare('SELECT id, city, state FROM cities ORDER BY id').all();
+  const industries = db.prepare(filterTop
+    ? "SELECT id, gcid, name FROM industries WHERE priority=1 ORDER BY priority DESC, id ASC"
+    : "SELECT id, gcid, name FROM industries ORDER BY priority DESC, id ASC"
+  ).all();
+  const cities = db.prepare('SELECT id, city, state FROM cities ORDER BY population DESC, city ASC').all();
   _cache = { industries, cities };
   return _cache;
 }
