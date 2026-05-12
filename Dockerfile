@@ -8,6 +8,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY server.js db.js db-country.js ghl-sync.js ai-agent.js license-hashes.json ./
+COPY dispatcher.js bootstrap-dispatcher.js csv-export.js migrate.js timezone.js ./
 COPY public ./public
 COPY mass-scrape ./mass-scrape
 
