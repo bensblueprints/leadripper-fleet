@@ -21,6 +21,8 @@ function tick(db, { logger = () => {}, seedMod } = {}) {
     if (getSetting(db, 'mass_scrape_enabled', '0') !== '1') return { skipped: 'disabled' };
 
     const maxInflightPerWorker = Math.max(1, +getSetting(db, 'mass_scrape_max_inflight_per_worker', '2'));
+    // How many cities to bundle per job so workers can use CITY_CONCURRENCY
+    const citiesPerJob = Math.max(1, Math.min(+getSetting(db, 'mass_scrape_cities_per_job', '20'), 200));
 
     // Live workers = seen in last 90s
     const liveCutoff = now() - 90;
@@ -29,9 +31,9 @@ function tick(db, { logger = () => {}, seedMod } = {}) {
     ).all(liveCutoff);
     if (!liveNodes.length) return { skipped: 'no-workers' };
 
-    // How many coverage rows are dispatched-but-not-done?
+    // Count inflight as dispatched JOBS (not individual cities) so slot math is in job units
     const inflight = db.prepare(
-      `SELECT COUNT(*) AS c FROM scrape_coverage WHERE status = 'dispatched'`
+      `SELECT COUNT(DISTINCT job_id) AS c FROM scrape_coverage WHERE status = 'dispatched' AND job_id IS NOT NULL`
     ).get().c;
     const maxInflight = liveNodes.length * maxInflightPerWorker;
     const slots = Math.max(0, maxInflight - inflight);
@@ -54,17 +56,24 @@ function tick(db, { logger = () => {}, seedMod } = {}) {
       }
     }
 
-    // Pick N pending coverage rows (phase 1 first)
+    // Fetch enough rows to fill all job slots; order by industry so same-industry cities group together
     const rows = db.prepare(
       `SELECT id, industry, gcid, city, state FROM scrape_coverage
        WHERE status='pending'
-       ORDER BY phase ASC, id ASC LIMIT ?`
-    ).all(slots);
+       ORDER BY phase ASC, industry ASC, id ASC LIMIT ?`
+    ).all(slots * citiesPerJob);
     if (!rows.length) return { dispatched: 0 };
 
+    // Group by industry — each job must be a single industry
+    const byIndustry = new Map();
+    for (const r of rows) {
+      if (!byIndustry.has(r.industry)) byIndustry.set(r.industry, []);
+      byIndustry.get(r.industry).push(r);
+    }
+
     const insJob = db.prepare(
-      `INSERT INTO jobs (industry, city, state, target_node_id, priority, status, max_results)
-       VALUES (?, ?, ?, NULL, 2, 'queued', 200)`
+      `INSERT INTO jobs (industry, city, cities, state, target_node_id, priority, status, max_results)
+       VALUES (?, ?, ?, ?, NULL, 2, 'queued', 200)`
     );
     const updCov = db.prepare(
       `UPDATE scrape_coverage SET status='dispatched', job_id=?, dispatched_at=? WHERE id=?`
@@ -72,20 +81,33 @@ function tick(db, { logger = () => {}, seedMod } = {}) {
 
     let dispatched = 0;
     const txn = db.transaction(() => {
-      for (const r of rows) {
-        // Parse "City, ST" into separate fields for the job (existing dispatch expects this)
-        const parts = String(r.city).split(',').map(s => s.trim());
-        const cityName = parts[0] || r.city;
-        const stateCode = parts[1] || r.state || '';
-        const result = insJob.run(r.industry, cityName, stateCode);
-        updCov.run(result.lastInsertRowid, now(), r.id);
-        dispatched++;
+      outer: for (const [industry, cityRows] of byIndustry) {
+        for (let i = 0; i < cityRows.length; i += citiesPerJob) {
+          if (dispatched >= slots) break outer;
+          const batch = cityRows.slice(i, i + citiesPerJob);
+          const first = batch[0];
+          const firstParts = String(first.city).split(',').map(s => s.trim());
+          const firstCity = firstParts[0] || first.city;
+          const firstState = firstParts[1] || first.state || '';
+          // Build the cities JSON array for multi-city parallel scraping
+          const cityList = JSON.stringify(batch.map(r => {
+            const p = String(r.city).split(',').map(s => s.trim());
+            const c = p[0] || r.city;
+            const s = p[1] || r.state || '';
+            return s ? `${c}, ${s}` : c;
+          }));
+          const result = insJob.run(industry, firstCity, cityList, firstState);
+          const jobId = result.lastInsertRowid;
+          const t = now();
+          for (const r of batch) updCov.run(jobId, t, r.id);
+          dispatched++;
+        }
       }
     });
     txn();
 
-    if (dispatched > 0) logger(`[mass-scrape] tick dispatched ${dispatched} jobs (workers=${liveNodes.length} inflight_before=${inflight})`);
-    return { dispatched, inflight_after: inflight + dispatched, workers: liveNodes.length };
+    if (dispatched > 0) logger(`[mass-scrape] tick dispatched ${dispatched} jobs (${citiesPerJob} cities/job, workers=${liveNodes.length} inflight_before=${inflight})`);
+    return { dispatched, cities_dispatched: dispatched * citiesPerJob, inflight_after: inflight + dispatched, workers: liveNodes.length };
   } catch (e) {
     logger('[mass-scrape] tick error: ' + e.message);
     return { error: e.message };
