@@ -1210,6 +1210,99 @@ setInterval(() => {
   } catch (e) { console.error('[node-sweeper] error:', e.message); }
 }, 30000);
 
+// ==================== SERVER-SIDE ENRICHMENT ====================
+// Enriches unchecked leads with website platform + email server-side.
+// Enable: UPDATE settings SET value='1' WHERE key='server_enrich_enabled';
+// Processes 20 leads concurrently every 5s ≈ 14k leads/hour.
+
+function detectPlatform(html, headers) {
+  const h = (html || '').toLowerCase();
+  const srv = ((headers['x-powered-by'] || '') + ' ' + (headers['server'] || '')).toLowerCase();
+  if (h.includes('wp-content/') || h.includes('wp-includes/')) return 'WordPress';
+  if (h.includes('cdn.shopify.com') || h.includes('shopify.theme') || h.includes('shopify.com/s/files')) return 'Shopify';
+  if (h.includes('static.wixstatic.com') || h.includes('wix.com/_api') || srv.includes('wix')) return 'Wix';
+  if (h.includes('static1.squarespace.com') || h.includes('squarespace.com')) return 'Squarespace';
+  if (h.includes('webflow.com') || h.includes('assets-global.website-files.com')) return 'Webflow';
+  if (h.includes('hs-scripts.com') || h.includes('hubspot.net') || h.includes('hscta.net')) return 'HubSpot';
+  if (h.includes('weebly.com')) return 'Weebly';
+  if (h.includes('multiscreensite.com') || h.includes('dudamobile.com')) return 'Duda';
+  if (h.includes('mage/') || h.includes('/skin/frontend/') || h.includes('"magento"')) return 'Magento';
+  if (h.includes('__next_data__') || h.includes('/_next/static/')) return 'Next.js';
+  if (h.includes('drupal.js') || h.includes('"drupal"')) return 'Drupal';
+  if (h.includes('joomla')) return 'Joomla';
+  if (h.includes('secureserver.net') || h.includes('godaddy')) return 'GoDaddy';
+  if (srv.includes('wordpress')) return 'WordPress';
+  return 'Unknown';
+}
+
+function extractEmail(html) {
+  if (!html) return null;
+  // Prefer mailto: links over raw text matches
+  const mailto = html.match(/mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/);
+  if (mailto) return mailto[1];
+  const raw = html.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+  return raw ? raw[0] : null;
+}
+
+async function enrichOneLead(lead) {
+  const url = lead.website;
+  if (!url || !url.startsWith('http')) return { status: 'no-website', platform: null, email: null };
+  try {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 12000);
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LeadRipperBot/1.0)' },
+      redirect: 'follow'
+    });
+    clearTimeout(tid);
+    const text = await resp.text().catch(() => '');
+    const hdrs = Object.fromEntries(resp.headers.entries());
+    return {
+      status: resp.ok ? 'live' : 'broken',
+      platform: detectPlatform(text, hdrs),
+      email: extractEmail(text)
+    };
+  } catch (e) {
+    return { status: 'broken', platform: null, email: null };
+  }
+}
+
+const ENRICH_BATCH = 20;
+setInterval(async () => {
+  try {
+    if (dispatcher.getSetting(db, 'server_enrich_enabled', '0') !== '1') return;
+    const leads = db.prepare(`
+      SELECT id, website, email FROM leads
+      WHERE website_status = 'unchecked'
+        AND website IS NOT NULL AND website != '' AND website LIKE 'http%'
+      LIMIT ?
+    `).all(ENRICH_BATCH);
+    if (!leads.length) return;
+
+    // Mark as in-progress so concurrent ticks don't double-process
+    db.prepare(`UPDATE leads SET website_status='checking' WHERE id IN (${leads.map(()=>'?').join(',')})`)
+      .run(...leads.map(l => l.id));
+
+    const results = await Promise.all(leads.map(enrichOneLead));
+
+    const upd = db.prepare(`
+      UPDATE leads SET
+        website_status = ?,
+        website_platform = COALESCE(NULLIF(?, ''), website_platform),
+        email = CASE WHEN (email IS NULL OR email = '') AND ? IS NOT NULL THEN ? ELSE email END
+      WHERE id = ?
+    `);
+    db.transaction(() => {
+      for (let i = 0; i < leads.length; i++) {
+        const r = results[i];
+        upd.run(r.status, r.platform || null, r.email, r.email, leads[i].id);
+      }
+    })();
+    console.log(`[server-enrich] +${leads.length} (live:${results.filter(r=>r.status==='live').length} broken:${results.filter(r=>r.status==='broken').length} no-web:${results.filter(r=>r.status==='no-website').length})`);
+  } catch (e) { console.error('[server-enrich] error:', e.message); }
+}, 5000);
+
 // ==================== GHL SYNC ====================
 
 app.get('/api/admin/ghl/config', requireAdmin, (req, res) => {
