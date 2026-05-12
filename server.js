@@ -5,10 +5,15 @@ const fs = require('fs');
 const crypto = require('crypto');
 const db = require('./db');
 const countryDb = require('./db-country');
-const massSeed = require('./mass-scrape/seed');
-const massScheduler = require('./mass-scrape/scheduler');
+// Old mass-scrape modules disabled — replaced by dispatcher.js (lookup-table based).
+// Kept require commented for ai-agent which may still reference them via tools.
+const massSeed = { ensureSeeded: () => ({ inserted: 0, already: true }), seedPhase2: () => ({ inserted: 0 }) };
+const massScheduler = { tick: () => {}, requeueFailed: () => 0, logMs: () => {}, stats: () => ({}) };
 const ghlSync = require('./ghl-sync');
 const aiAgent = require('./ai-agent');
+const csvExport = require('./csv-export');
+const { timezoneForState } = require('./timezone');
+const dispatcher = require('./dispatcher');
 
 const app = express();
 app.use(cors());
@@ -158,20 +163,44 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
 
   const t = now();
 
-  // Group leads by country so we can insert into the right DB
+  // Spec section 3 — Lead Validator. Apply BEFORE any DB writes.
+  // Reject in order: empty name → permanently closed → non-US → invalid phone.
   const usLeads = [];
   const countryBatches = {}; // country -> {db, leads[]}
   let skipped = 0;
+  let rejectedClosed = 0;
+  let rejectedNonUS = 0;
+  let rejectedPhone = 0;
   for (const l of leads) {
     const nm = (l.name || l.business_name || '').toString().trim();
     if (!nm) { skipped++; continue; }
-    const { db: cdb, country } = countryDb.getDbForLead({ ...l, state: l.state || job.state });
-    if (country === 'USA') {
-      usLeads.push(l);
-    } else {
+
+    // Spec rule #3 — never store permanently closed.
+    const status = (l.business_status || l.status || '').toString().toLowerCase();
+    if (l.permanently_closed === true || status.includes('permanently_closed') || status.includes('permanently closed') || status === 'closed_permanently') {
+      rejectedClosed++; skipped++; continue;
+    }
+
+    // Spec rule #2 — US-only.
+    const stateCode = (l.state || job.state || '').toString().toUpperCase().trim();
+    if (!isUSState(stateCode)) {
+      // Still drop into country DBs for non-US (existing behavior), but don't add to usLeads.
+      rejectedNonUS++;
+      const { db: cdb, country } = countryDb.getDbForLead({ ...l, state: l.state || job.state });
       if (!countryBatches[country]) countryBatches[country] = { db: cdb, leads: [] };
       countryBatches[country].leads.push(l);
+      continue;
     }
+
+    // Spec section 3 check 3 — phone must be exactly 10 digits (US).
+    // Worker emits "+1 215-391-0405" → strip non-digits → 11 digits with leading '1'. Drop it.
+    const rawPhone = (l.phone || '').toString();
+    let digits = rawPhone.replace(/\D/g, '');
+    if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+    if (digits.length !== 10) { rejectedPhone++; skipped++; continue; }
+    l.phone = digits; // normalize
+
+    usLeads.push(l);
   }
 
   const insertLead = db.prepare(`
@@ -180,8 +209,10 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
       website_platform, website_status, tags, business_hours,
       reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
       ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_analyzed_at, ai_provider,
+      zip_code, country, business_status, timezone, contact_name,
+      hours_monday, hours_tuesday, hours_wednesday, hours_thursday, hours_friday, hours_saturday, hours_sunday, hours_raw,
       created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const txn = db.transaction(() => {
@@ -192,17 +223,33 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
       const tagsSet = new Set(baseTags);
       if (industryTag) tagsSet.add(industryTag);
       const tagsJson = JSON.stringify([...tagsSet]);
+      const stateCode = (l.state || job.state || '').toString().toUpperCase().trim();
+      const tz = l.timezone || timezoneForState(stateCode) || null;
+      const hours = l.hours || {};
       insertLead.run(job.id, node.id,
         nm, l.phone || null, l.email || null, l.website || null,
-        l.address || null, l.city || job.city, l.state || job.state,
+        l.address || null, l.city || job.city, stateCode || null,
         l.industry || null, l.gcid || null, l.search_term || job.industry,
         l.google_category_raw || null, l.rating || null, l.reviews || null,
-        l.website_platform || null, l.website_status || 'unchecked', tagsJson, l.business_hours || null,
+        l.website_platform || null, l.website_status || 'unchecked', tagsJson, l.business_hours || hours.raw || null,
         +(l.reviews_1star||0), +(l.reviews_2star||0), +(l.reviews_3star||0), +(l.reviews_4star||0), +(l.reviews_5star||0),
         l.ai_seo_score == null ? null : +l.ai_seo_score,
         l.ai_design_score == null ? null : +l.ai_design_score,
         l.ai_seo_notes || null, l.ai_design_notes || null,
         l.ai_analyzed_at || null, l.ai_provider || null,
+        l.zip_code || l.postal_code || null,
+        'US',
+        l.business_status || 'open',
+        tz,
+        l.contact_name || l.owner_name || null,
+        hours.monday || l.hours_monday || null,
+        hours.tuesday || l.hours_tuesday || null,
+        hours.wednesday || l.hours_wednesday || null,
+        hours.thursday || l.hours_thursday || null,
+        hours.friday || l.hours_friday || null,
+        hours.saturday || l.hours_saturday || null,
+        hours.sunday || l.hours_sunday || null,
+        hours.raw || l.hours_raw || l.business_hours || null,
         t);
     }
     db.prepare(`
@@ -215,17 +262,77 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
                        leads_harvested=leads_harvested+?
       WHERE id=?
     `).run(leads.length - skipped, node.id);
-    // Mass-scrape coverage: if this job came from the orchestrator, flip the row
-    db.prepare(
-      `UPDATE scrape_coverage
-       SET status = CASE WHEN ? IS NULL THEN 'done' ELSE 'failed' END,
-           leads_found = ?,
-           last_error = ?,
-           completed_at = ?
-       WHERE job_id = ?`
-    ).run(error, leads.length - skipped, error, t, job.id);
+    // jobs_completed: record finish on the (industry_id, city_id) pair if dispatcher-issued.
+    if (job.industry_id && job.city_id) {
+      db.prepare(`
+        INSERT INTO jobs_completed (industry_id, city_id, status, completed_at, leads_found, node_id, last_error)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(industry_id, city_id) DO UPDATE SET
+          status=excluded.status, completed_at=excluded.completed_at,
+          leads_found=excluded.leads_found, node_id=excluded.node_id, last_error=excluded.last_error
+      `).run(job.industry_id, job.city_id, error ? 'failed' : 'done', t, leads.length - skipped, node.id, error || null);
+    }
   });
   txn();
+
+  // Spec section 7 — CSV export. After approved leads commit, write to per-industry CSV.
+  // Only export rows that are NEWLY approved (deduped against master). We can't easily know
+  // which ones survived INSERT OR IGNORE in this batch, so re-query by job_id.
+  let csvWritten = 0;
+  try {
+    const justInserted = db.prepare(
+      `SELECT * FROM leads WHERE job_id = ? AND created_at = ?`
+    ).all(job.id, t);
+    if (justInserted.length) {
+      const r = csvExport.appendApprovedLeads(justInserted.map(row => ({
+        business_name: row.name,
+        phone_number: row.phone,
+        email_address: row.email,
+        contact_name: row.contact_name,
+        website: row.website,
+        website_platform: row.website_platform,
+        address: row.address,
+        city: row.city,
+        state: row.state,
+        zip_code: row.zip_code,
+        timezone: row.timezone,
+        hours_monday: row.hours_monday,
+        hours_tuesday: row.hours_tuesday,
+        hours_wednesday: row.hours_wednesday,
+        hours_thursday: row.hours_thursday,
+        hours_friday: row.hours_friday,
+        hours_saturday: row.hours_saturday,
+        hours_sunday: row.hours_sunday,
+        hours_raw: row.hours_raw || row.business_hours,
+        industry: row.industry,
+        first_seen: new Date(row.created_at * 1000).toISOString().slice(0, 10),
+        source_job_id: row.job_id,
+        source_node: node.label || node.hostname || `node_${node.id}`
+      })));
+      csvWritten = r.written;
+      // Bump per-industry stats
+      const counts = {};
+      for (const row of justInserted) {
+        const slug = csvExport.industrySlug(row.industry);
+        counts[slug] = (counts[slug] || 0) + 1;
+      }
+      csvExport.bumpStats(counts);
+    }
+    // Append to _completed_jobs.csv (immediate persistence per spec rule #7).
+    csvExport.appendCompletedJob({
+      job_id: job.id,
+      industry: job.industry,
+      city: job.city,
+      state: job.state,
+      completed_at: t,
+      leads_found: leads.length - skipped,
+      leads_approved: csvWritten,
+      leads_rejected: rejectedClosed + rejectedNonUS + rejectedPhone,
+      node_id: node.label || `node_${node.id}`
+    });
+  } catch (e) {
+    console.error('[csv-export] error:', e.message);
+  }
 
   // Insert non-US leads into their country DBs (outside main txn)
   for (const [country, batch] of Object.entries(countryBatches)) {
@@ -268,7 +375,7 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
     }
   }
 
-  res.json({ ok: true, saved: leads.length - skipped, skipped });
+  res.json({ ok: true, saved: leads.length - skipped, skipped, rejected_closed: rejectedClosed, rejected_non_us: rejectedNonUS, rejected_phone: rejectedPhone, csv_written: csvWritten });
 });
 
 // Worker pushes log lines (activity stream). Accepts batch of {msg, job_id, level, t}.
@@ -953,34 +1060,35 @@ app.get('/api/admin/leads', requireAdmin, (req, res) => {
 
 // ==================== MASS SCRAPE ORCHESTRATOR ====================
 
+// Mass-scrape endpoints proxy to the new lazy dispatcher (lookup-table based, no 120M materialization).
 app.get('/api/admin/mass-scrape/status', requireAdmin, (req, res) => {
-  res.json(massScheduler.stats(db));
+  res.json(dispatcher.stats(db));
 });
 
 app.post('/api/admin/mass-scrape/start', requireAdmin, (req, res) => {
-  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('mass_scrape_enabled', '1')`).run();
-  massScheduler.logMs(db, { action: 'start', reason: 'admin' });
-  // Kick seed if needed
-  const r = massSeed.ensureSeeded(db, { logger: (m) => console.log(m) });
-  res.json({ ok: true, seed: r });
+  dispatcher.setSetting(db, 'dispatch_enabled', '1');
+  res.json({ ok: true, dispatch_enabled: '1' });
 });
 
 app.post('/api/admin/mass-scrape/pause', requireAdmin, (req, res) => {
-  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('mass_scrape_enabled', '0')`).run();
-  massScheduler.logMs(db, { action: 'pause', reason: req.body?.reason || 'admin' });
-  res.json({ ok: true });
+  dispatcher.setSetting(db, 'dispatch_enabled', '0');
+  res.json({ ok: true, dispatch_enabled: '0' });
 });
 
 app.post('/api/admin/mass-scrape/seed-phase2', requireAdmin, (req, res) => {
-  const r = massSeed.seedPhase2(db, { logger: (m) => console.log(m) });
-  res.json({ ok: true, ...r });
+  res.json({ ok: true, note: 'phase2 seed deprecated — dispatcher walks all (industry,city) pairs lazily.' });
 });
 
 app.post('/api/admin/mass-scrape/retry-failed', requireAdmin, (req, res) => {
   const changed = db.prepare(
-    `UPDATE scrape_coverage SET status='pending', last_error=NULL WHERE status='failed'`
+    `DELETE FROM jobs_completed WHERE status='failed'`
   ).run().changes;
-  res.json({ ok: true, requeued: changed });
+  res.json({ ok: true, requeued: changed, note: 'Cleared failed (industry,city) pairs so dispatcher reissues them.' });
+});
+
+app.post('/api/admin/dispatch/reset-cursor', requireAdmin, (req, res) => {
+  dispatcher.setSetting(db, 'dispatch_cursor', '0');
+  res.json({ ok: true, dispatch_cursor: 0 });
 });
 
 app.get('/api/admin/mass-scrape/logs', requireAdmin, (req, res) => {
@@ -1038,26 +1146,18 @@ function rearmScheduler() {
     SCHEDULER_INTERVAL_MS = Math.max(5, s) * 1000;
   } catch {}
 }
+// Old mass-scrape orchestrator + ensureSeeded disabled — replaced by lazy dispatcher.
+// Old code path required materializing 4045×29738=120M coverage rows which bloated the DB.
 setInterval(() => {
   try {
-    massScheduler.tick(db, { logger: (m) => console.log(m), seedMod: massSeed });
-  } catch (e) { console.error('[mass-scrape] tick error:', e.message); }
+    dispatcher.tick(db, { logger: (m) => console.log(m) });
+  } catch (e) { console.error('[dispatch] tick error:', e.message); }
+  try {
+    const cr = dispatcher.dispatchCampaignJobs(db);
+    if (cr.dispatched > 0) console.log(`[dispatch] campaign: +${cr.dispatched} ALL_US jobs`);
+  } catch (e) { console.error('[dispatch] campaign tick error:', e.message); }
   rearmScheduler();
 }, 30 * 1000);
-
-// Hourly: requeue rows failed >24h ago (capped to 1 retry)
-setInterval(() => {
-  try {
-    const n = massScheduler.requeueFailed(db);
-    if (n > 0) console.log(`[mass-scrape] requeued ${n} failed rows`);
-  } catch {}
-}, 60 * 60 * 1000);
-
-// Seed on boot (idempotent)
-try {
-  const r = massSeed.ensureSeeded(db, { logger: (m) => console.log(m) });
-  if (r.inserted > 0) console.log(`[mass-scrape boot] seeded ${r.inserted} rows`);
-} catch (e) { console.error('[mass-scrape boot] seed error:', e.message); }
 
 // ==================== JOB TIMEOUT SWEEPER ====================
 // Jobs that have been running for >10 minutes without finishing are assumed
@@ -1439,6 +1539,279 @@ app.get('/api/admin/countries', requireAdmin, (req, res) => {
     size_bytes: c.size
   }));
   res.json({ countries: list });
+});
+
+// ==================== CAMPAIGN ENDPOINTS ====================
+
+/**
+ * POST /api/fleet/campaign-progress
+ * Body: { job_id, city_results: [{city, state, leads:[...]}], cities_done_count, total_cities }
+ * Inserts leads from one batch of cities, updates node progress counters.
+ */
+app.post('/api/fleet/campaign-progress', requireWorker, (req, res) => {
+  const { job_id, city_results = [], cities_done_count = 0, total_cities = 0 } = req.body || {};
+  if (!job_id) return res.status(400).json({ error: 'missing job_id' });
+
+  const node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
+  if (!node) return res.status(404).json({ error: 'node not registered' });
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(job_id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+
+  const t = now();
+
+  const insertLead = db.prepare(`
+    INSERT OR IGNORE INTO leads (job_id, node_id, name, phone, email, website, address, city, state,
+      industry, gcid, search_term, google_category_raw, rating, reviews,
+      website_platform, website_status, tags, business_hours,
+      reviews_1star, reviews_2star, reviews_3star, reviews_4star, reviews_5star,
+      ai_seo_score, ai_design_score, ai_seo_notes, ai_design_notes, ai_analyzed_at, ai_provider,
+      zip_code, country, business_status, timezone, contact_name,
+      hours_monday, hours_tuesday, hours_wednesday, hours_thursday, hours_friday, hours_saturday, hours_sunday, hours_raw,
+      created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  let inserted = 0;
+  let lastCity = null;
+
+  const txn = db.transaction(() => {
+    for (const cityResult of city_results) {
+      const { city: cityName, state: cityState, leads = [] } = cityResult;
+      lastCity = cityName || lastCity;
+
+      for (const l of leads) {
+        const nm = (l.name || l.business_name || '').toString().trim();
+        if (!nm) continue;
+
+        // Reject permanently closed
+        const status = (l.business_status || l.status || '').toString().toLowerCase();
+        if (l.permanently_closed === true || status.includes('permanently_closed') || status.includes('permanently closed') || status === 'closed_permanently') continue;
+
+        // Normalise phone: strip to 10 digits
+        const rawPhone = (l.phone || '').toString();
+        let digits = rawPhone.replace(/\D/g, '');
+        if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+        if (digits.length !== 10) continue;
+
+        // Only US state leads
+        const stateCode = (l.state || cityState || job.state || '').toString().toUpperCase().trim();
+        if (!isUSState(stateCode)) continue;
+
+        const baseTags = Array.isArray(l.tags) ? l.tags : (typeof l.tags === 'string' ? JSON.parse(l.tags) : []);
+        const industryTag = (l.industry || '').toLowerCase().replace(/\s+/g, '-');
+        const tagsSet = new Set(baseTags);
+        if (industryTag) tagsSet.add(industryTag);
+        const tagsJson = JSON.stringify([...tagsSet]);
+        const tz = l.timezone || timezoneForState(stateCode) || null;
+        const hours = l.hours || {};
+
+        const r = insertLead.run(job.id, node.id,
+          nm, digits, l.email || null, l.website || null,
+          l.address || null, l.city || cityName, stateCode || null,
+          l.industry || job.industry || null, l.gcid || null, l.search_term || job.industry,
+          l.google_category_raw || null, l.rating || null, l.reviews || null,
+          l.website_platform || null, l.website_status || 'unchecked', tagsJson, l.business_hours || hours.raw || null,
+          +(l.reviews_1star||0), +(l.reviews_2star||0), +(l.reviews_3star||0), +(l.reviews_4star||0), +(l.reviews_5star||0),
+          null, null, null, null, null, null,
+          l.zip_code || l.postal_code || null,
+          'US',
+          l.business_status || 'open',
+          tz,
+          l.contact_name || l.owner_name || null,
+          hours.monday || l.hours_monday || null,
+          hours.tuesday || l.hours_tuesday || null,
+          hours.wednesday || l.hours_wednesday || null,
+          hours.thursday || l.hours_thursday || null,
+          hours.friday || l.hours_friday || null,
+          hours.saturday || l.hours_saturday || null,
+          hours.sunday || l.hours_sunday || null,
+          hours.raw || l.hours_raw || l.business_hours || null,
+          t);
+        if (r.changes) inserted++;
+      }
+    }
+
+    // Update job leads_found counter
+    db.prepare(`UPDATE jobs SET leads_found = COALESCE(leads_found, 0) + ? WHERE id = ?`).run(inserted, job.id);
+
+    // Update node progress
+    db.prepare(`
+      UPDATE nodes SET
+        current_job_city = ?,
+        current_job_leads = COALESCE(current_job_leads, 0) + ?,
+        status = 'working'
+      WHERE id = ?
+    `).run(lastCity || null, inserted, node.id);
+  });
+  txn();
+
+  // Append to CSV (same pattern as job-result)
+  try {
+    const justInserted = db.prepare(`SELECT * FROM leads WHERE job_id = ? AND created_at = ?`).all(job.id, t);
+    if (justInserted.length) {
+      csvExport.appendApprovedLeads(justInserted.map(row => ({
+        business_name: row.name,
+        phone_number: row.phone,
+        email_address: row.email,
+        contact_name: row.contact_name,
+        website: row.website,
+        website_platform: row.website_platform,
+        address: row.address,
+        city: row.city,
+        state: row.state,
+        zip_code: row.zip_code,
+        timezone: row.timezone,
+        hours_monday: row.hours_monday,
+        hours_tuesday: row.hours_tuesday,
+        hours_wednesday: row.hours_wednesday,
+        hours_thursday: row.hours_thursday,
+        hours_friday: row.hours_friday,
+        hours_saturday: row.hours_saturday,
+        hours_sunday: row.hours_sunday,
+        hours_raw: row.hours_raw || row.business_hours,
+        industry: row.industry,
+        first_seen: new Date(row.created_at * 1000).toISOString().slice(0, 10),
+        source_job_id: row.job_id,
+        source_node: node.label || node.hostname || `node_${node.id}`
+      })));
+      const counts = {};
+      for (const row of justInserted) {
+        const slug = csvExport.industrySlug(row.industry);
+        counts[slug] = (counts[slug] || 0) + 1;
+      }
+      csvExport.bumpStats(counts);
+    }
+  } catch (e) {
+    console.error('[campaign-progress] csv error:', e.message);
+  }
+
+  // Log to node_logs if table exists
+  try {
+    db.prepare(`INSERT INTO node_logs (node_id, job_id, level, msg, t) VALUES (?, ?, 'info', ?, ?)`)
+      .run(node.id, job.id, `campaign-progress: ${inserted} inserted (cities_done=${cities_done_count}/${total_cities})`, t);
+  } catch {}
+
+  res.json({ ok: true, inserted });
+});
+
+/**
+ * POST /api/fleet/campaign-enrich
+ * Body: { job_id, enrichments: [{phone, website_platform, website_status, email}] }
+ * Updates leads by phone with enrichment data. Only sets email if lead has none.
+ */
+app.post('/api/fleet/campaign-enrich', requireWorker, (req, res) => {
+  const { job_id, enrichments = [] } = req.body || {};
+  if (!job_id) return res.status(400).json({ error: 'missing job_id' });
+
+  const node = db.prepare('SELECT id FROM nodes WHERE machine_id = ?').get(req.machineId);
+  if (!node) return res.status(404).json({ error: 'node not registered' });
+
+  if (!Array.isArray(enrichments) || enrichments.length === 0) {
+    return res.json({ ok: true, updated: 0 });
+  }
+
+  const upd = db.prepare(`
+    UPDATE leads
+    SET website_platform = COALESCE(?, website_platform),
+        website_status = COALESCE(?, website_status),
+        email = CASE WHEN (email IS NULL OR email = '') AND ? != '' AND ? IS NOT NULL THEN ? ELSE email END
+    WHERE phone = ? AND job_id = ?
+  `);
+
+  let updated = 0;
+  const txn = db.transaction(() => {
+    for (const e of enrichments) {
+      if (!e.phone) continue;
+      const emailVal = e.email || null;
+      const r = upd.run(
+        e.website_platform || null,
+        e.website_status || null,
+        emailVal || '', emailVal, emailVal,
+        e.phone,
+        job_id
+      );
+      if (r.changes) updated++;
+    }
+  });
+  txn();
+
+  res.json({ ok: true, updated });
+});
+
+/**
+ * POST /api/fleet/campaign-complete
+ * Body: { job_id, total_leads, cities_done }
+ * Marks job done, updates node counters, triggers CSV export for the industry.
+ */
+app.post('/api/fleet/campaign-complete', requireWorker, (req, res) => {
+  const { job_id, total_leads = 0, cities_done = 0 } = req.body || {};
+  if (!job_id) return res.status(400).json({ error: 'missing job_id' });
+
+  const node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
+  if (!node) return res.status(404).json({ error: 'node not registered' });
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(job_id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+
+  const t = now();
+
+  const txn = db.transaction(() => {
+    db.prepare(`
+      UPDATE jobs SET status = 'done', leads_found = ?, finished_at = ? WHERE id = ?
+    `).run(total_leads, t, job_id);
+
+    db.prepare(`
+      UPDATE nodes SET
+        current_job_id = NULL,
+        current_job_city = NULL,
+        current_job_leads = 0,
+        status = 'idle',
+        jobs_done = jobs_done + 1,
+        leads_harvested = leads_harvested + ?
+      WHERE id = ?
+    `).run(total_leads, node.id);
+  });
+  txn();
+
+  // Trigger CSV export for the industry — re-export all leads for this industry
+  try {
+    if (job.industry) {
+      const allLeads = db.prepare(
+        `SELECT * FROM leads WHERE job_id = ? ORDER BY id ASC`
+      ).all(job_id);
+      if (allLeads.length > 0) {
+        csvExport.appendApprovedLeads(allLeads.map(row => ({
+          business_name: row.name,
+          phone_number: row.phone,
+          email_address: row.email,
+          contact_name: row.contact_name,
+          website: row.website,
+          website_platform: row.website_platform,
+          address: row.address,
+          city: row.city,
+          state: row.state,
+          zip_code: row.zip_code,
+          timezone: row.timezone,
+          hours_monday: row.hours_monday,
+          hours_tuesday: row.hours_tuesday,
+          hours_wednesday: row.hours_wednesday,
+          hours_thursday: row.hours_thursday,
+          hours_friday: row.hours_friday,
+          hours_saturday: row.hours_saturday,
+          hours_sunday: row.hours_sunday,
+          hours_raw: row.hours_raw || row.business_hours,
+          industry: row.industry,
+          first_seen: new Date(row.created_at * 1000).toISOString().slice(0, 10),
+          source_job_id: row.job_id,
+          source_node: node.label || node.hostname || `node_${node.id}`
+        })));
+      }
+    }
+  } catch (e) {
+    console.error('[campaign-complete] csv error:', e.message);
+  }
+
+  console.log(`[campaign-complete] job ${job_id} done: ${total_leads} leads, ${cities_done} cities`);
+  res.json({ ok: true });
 });
 
 // ==================== STATIC ====================
