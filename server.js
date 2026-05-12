@@ -1164,30 +1164,51 @@ setInterval(() => {
   rearmScheduler();
 }, 30 * 1000);
 
-// ==================== JOB TIMEOUT SWEEPER ====================
-// Jobs that have been running for >10 minutes without finishing are assumed
-// stuck (crashed worker, network issue, etc.). Reset to queued so another
-// worker can pick them up.
-const JOB_TIMEOUT_SECONDS = 600;
+// ==================== NODE OFFLINE SWEEPER ====================
+// Every 30s: detect nodes that stopped heartbeating, immediately requeue
+// their jobs so live workers pick them up. Prune node records gone dark
+// for >30 min. Safety net: also requeue any job stuck >10 min regardless.
+const NODE_OFFLINE_SEC = 90;
+const NODE_PRUNE_SEC   = 1800;
+const JOB_TIMEOUT_SEC  = 600;
+
 setInterval(() => {
   try {
-    const cutoff = now() - JOB_TIMEOUT_SECONDS;
-    const tx = db.transaction(() => {
-      const stuck = db.prepare(`
+    const t = now();
+    db.transaction(() => {
+      // 1. Requeue running jobs whose node has gone offline (no heartbeat >90s)
+      const offlineJobs = db.prepare(`
         SELECT j.id, j.assigned_node_id
-        FROM jobs j
-        JOIN nodes n ON n.id = j.assigned_node_id
-        WHERE j.status = 'running' AND j.started_at < ?
-      `).all(cutoff);
+        FROM jobs j JOIN nodes n ON n.id = j.assigned_node_id
+        WHERE j.status = 'running' AND n.last_seen < ?
+      `).all(t - NODE_OFFLINE_SEC);
+      for (const row of offlineJobs) {
+        db.prepare(`UPDATE jobs SET status='queued', assigned_node_id=NULL, started_at=NULL WHERE id=?`).run(row.id);
+        console.log(`[node-offline] requeued job ${row.id} (node ${row.assigned_node_id} went offline)`);
+      }
+
+      // 2. Mark offline nodes so the UI shows correct status
+      db.prepare(`
+        UPDATE nodes SET status='offline', current_job_id=NULL
+        WHERE last_seen < ? AND status != 'offline'
+      `).run(t - NODE_OFFLINE_SEC);
+
+      // 3. Delete nodes dark for >30 minutes
+      const pruned = db.prepare(`DELETE FROM nodes WHERE last_seen < ?`).run(t - NODE_PRUNE_SEC).changes;
+      if (pruned > 0) console.log(`[node-prune] removed ${pruned} stale node(s)`);
+
+      // 4. Safety net: requeue any job still running >10 min on any node
+      const stuck = db.prepare(`
+        SELECT id, assigned_node_id FROM jobs
+        WHERE status = 'running' AND started_at < ?
+      `).all(t - JOB_TIMEOUT_SEC);
       for (const row of stuck) {
         db.prepare(`UPDATE jobs SET status='queued', assigned_node_id=NULL, started_at=NULL WHERE id=?`).run(row.id);
-        db.prepare(`UPDATE nodes SET current_job_id=NULL, status='idle' WHERE id=? AND current_job_id=?`).run(row.assigned_node_id, row.id);
-        console.log(`[job-timeout] reset stuck job ${row.id} (node ${row.assigned_node_id})`);
+        console.log(`[job-timeout] reset stuck job ${row.id} after 10 min (node ${row.assigned_node_id})`);
       }
-    });
-    tx();
-  } catch (e) { console.error('[job-timeout] sweeper error:', e.message); }
-}, 60000);
+    })();
+  } catch (e) { console.error('[node-sweeper] error:', e.message); }
+}, 30000);
 
 // ==================== GHL SYNC ====================
 
