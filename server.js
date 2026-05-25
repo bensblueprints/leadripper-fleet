@@ -24,6 +24,21 @@ const ADMIN_PASSWORD = '2TQmwZePcT5k-PBcpY8k4YwPEG3dtNzP';
 
 function now() { return Math.floor(Date.now() / 1000); }
 
+// ---- license hash cache ----
+const LICENSE_HASHES_PATH = path.join(__dirname, 'license-hashes.json');
+let licenseHashes = new Set();
+function reloadLicenseHashes() {
+  try { licenseHashes = new Set(JSON.parse(fs.readFileSync(LICENSE_HASHES_PATH, 'utf8'))); } catch {}
+}
+reloadLicenseHashes();
+setInterval(reloadLicenseHashes, 60000);
+
+function isValidLicenseKey(key) {
+  if (!key || typeof key !== 'string') return false;
+  const hash = crypto.createHash('sha256').update(key.trim()).digest('hex');
+  return licenseHashes.has(hash);
+}
+
 const US_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
 function isUSState(state) { return US_STATES.has((state || '').toString().toUpperCase()); }
 
@@ -43,13 +58,23 @@ function requireWorker(req, res, next) {
   next();
 }
 
+// ---- customer (license holder) auth middleware ----
+function requireCustomer(req, res, next) {
+  const key = req.headers['x-license-key'] || req.query.license_key;
+  if (!key) return res.status(401).json({ error: 'missing license key' });
+  if (!isValidLicenseKey(key)) return res.status(401).json({ error: 'invalid license key' });
+  req.licenseKey = key.trim();
+  next();
+}
+
 // ==================== WORKER ENDPOINTS ====================
 
 // Node registers / checks in. Creates row on first contact, updates on repeat.
 app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
   const { hostname, os, app_version, cpu_pct, ram_pct, cpu_cap, ram_cap, label,
-          current_job_leads, current_job_industry, current_job_city } = req.body || {};
+          current_job_leads, current_job_industry, current_job_city, license_key } = req.body || {};
   const t = now();
+  const resolvedLicenseKey = (license_key && isValidLicenseKey(license_key)) ? license_key.trim() : null;
 
   let node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
 
@@ -59,7 +84,7 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
         cpu_pct, ram_pct, cpu_cap, ram_cap, status, last_seen, first_seen)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?)
     `).run(
-      req.machineId, 'open', hostname || null, label || hostname || null,
+      req.machineId, resolvedLicenseKey || 'open', hostname || null, label || hostname || null,
       os || null, app_version || null,
       cpu_pct ?? 0, ram_pct ?? 0, cpu_cap ?? 50, ram_cap ?? 50, t, t
     );
@@ -70,6 +95,7 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
       SET hostname = COALESCE(?, hostname),
           os = COALESCE(?, os),
           app_version = COALESCE(?, app_version),
+          license_key = COALESCE(?, license_key),
           cpu_pct = ?, ram_pct = ?,
           cpu_cap = COALESCE(?, cpu_cap),
           ram_cap = COALESCE(?, ram_cap),
@@ -82,6 +108,7 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
           last_seen = ?
       WHERE id = ?
     `).run(hostname || null, os || null, app_version || null,
+      resolvedLicenseKey,
       cpu_pct ?? node.cpu_pct, ram_pct ?? node.ram_pct,
       cpu_cap, ram_cap,
       +(current_job_leads||0),
@@ -1424,6 +1451,55 @@ app.get('/api/admin/leads/meta', requireAdmin, (req, res) => {
   }
 });
 
+// ==================== INDUSTRY CSV FILES (/data/LeadRipper) ====================
+
+app.get('/api/admin/csv/index', requireAdmin, (req, res) => {
+  try {
+    const q = String(req.query.q || '').toLowerCase();
+    const limit = Math.min(Math.max(+req.query.limit || 100, 1), 500);
+    const offset = Math.max(+req.query.offset || 0, 0);
+    let files = csvExport.listIndustryCsvs();
+    if (q) files = files.filter(f => f.file.toLowerCase().includes(q) || f.slug.toLowerCase().includes(q));
+    const total = files.length;
+    files = files.slice(offset, offset + limit);
+    res.json({ total, offset, limit, files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/csv/stats', requireAdmin, (req, res) => {
+  try {
+    const files = csvExport.listIndustryCsvs();
+    let bytes = 0;
+    for (const f of files) bytes += f.bytes || 0;
+    let stats = {};
+    try {
+      stats = JSON.parse(fs.readFileSync(path.join(csvExport.ROOT, '_stats.json'), 'utf8'));
+    } catch { /* ignore */ }
+    res.json({
+      industry_csv_count: files.length,
+      total_bytes: bytes,
+      stats,
+      root: csvExport.ROOT,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/admin/csv/download/:name', requireAdmin, (req, res) => {
+  try {
+    const hit = csvExport.readCsvFile(req.params.name);
+    if (!hit) return res.status(404).json({ error: 'not found' });
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${hit.name}"`);
+    res.send(hit.content);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ==================== AI ASSISTANT ====================
 
 app.post('/api/admin/ai/chat', requireAdmin, async (req, res) => {
@@ -1930,6 +2006,133 @@ app.post('/api/fleet/campaign-complete', requireWorker, (req, res) => {
   }
 
   console.log(`[campaign-complete] job ${job_id} done: ${total_leads} leads, ${cities_done} cities`);
+  res.json({ ok: true });
+});
+
+// ==================== CUSTOMER PORTAL API ====================
+
+// Verify license key — returns stats + nodes for this license
+app.post('/api/customer/verify', (req, res) => {
+  const { license_key } = req.body || {};
+  if (!isValidLicenseKey(license_key)) {
+    return res.status(401).json({ ok: false, error: 'Invalid license key. Check your key and try again.' });
+  }
+  const key = license_key.trim();
+  const nodes = db.prepare(`SELECT id, label, hostname, status, jobs_done, leads_harvested, last_seen FROM nodes WHERE license_key = ?`).all(key);
+  const nodeIds = nodes.map(n => n.id);
+  let leadsTotal = 0;
+  if (nodeIds.length) {
+    const ph = nodeIds.map(() => '?').join(',');
+    leadsTotal = db.prepare(`SELECT COUNT(*) AS c FROM leads WHERE node_id IN (${ph})`).get(...nodeIds).c;
+  }
+  res.json({ ok: true, nodes: nodes.length, leads_total: leadsTotal, nodes_list: nodes });
+});
+
+// Stats for this license
+app.get('/api/customer/stats', requireCustomer, (req, res) => {
+  const nodes = db.prepare(`SELECT id, label, hostname, status, jobs_done, leads_harvested, last_seen FROM nodes WHERE license_key = ?`).all(req.licenseKey);
+  const nodeIds = nodes.map(n => n.id);
+  let leadsTotal = 0, leadsToday = 0, jobsDone = 0, jobsRunning = 0;
+  if (nodeIds.length) {
+    const ph = nodeIds.map(() => '?').join(',');
+    const t24h = Math.floor(Date.now() / 1000) - 86400;
+    leadsTotal = db.prepare(`SELECT COUNT(*) AS c FROM leads WHERE node_id IN (${ph})`).get(...nodeIds).c;
+    leadsToday = db.prepare(`SELECT COUNT(*) AS c FROM leads WHERE node_id IN (${ph}) AND created_at > ?`).get(...nodeIds, t24h).c;
+    const jobStats = db.prepare(`SELECT status, COUNT(*) AS c FROM jobs WHERE assigned_node_id IN (${ph}) GROUP BY status`).all(...nodeIds);
+    for (const j of jobStats) {
+      if (j.status === 'done') jobsDone = j.c;
+      if (j.status === 'running') jobsRunning = j.c;
+    }
+  }
+  res.json({ nodes, leads_total: leadsTotal, leads_today: leadsToday, jobs_done: jobsDone, jobs_running: jobsRunning });
+});
+
+// Leads for this license (paginated, filterable)
+app.get('/api/customer/leads', requireCustomer, (req, res) => {
+  const nodeIds = db.prepare(`SELECT id FROM nodes WHERE license_key = ?`).all(req.licenseKey).map(n => n.id);
+  if (!nodeIds.length) return res.json({ leads: [], total: 0, has_more: false });
+
+  const { q = '', industry, state, city, limit = 100, offset = 0 } = req.query;
+  const ph = nodeIds.map(() => '?').join(',');
+  const where = [`node_id IN (${ph})`];
+  const params = [...nodeIds];
+
+  const qTrim = String(q).trim();
+  if (qTrim.length >= 2) {
+    const isPhoneLike = /^[\d\s\-\(\)\+\.]+$/.test(qTrim);
+    if (isPhoneLike) { where.push('phone LIKE ?'); params.push(`${qTrim}%`); }
+    else { where.push('(name LIKE ? OR phone LIKE ? OR email LIKE ? OR website LIKE ? OR address LIKE ?)'); const qq = `%${qTrim}%`; params.push(qq, qq, qq, qq, qq); }
+  }
+  if (industry) { where.push('industry = ?'); params.push(industry); }
+  if (state)    { where.push('state = ?');    params.push(state); }
+  if (city)     { where.push('city LIKE ?');  params.push(`%${city}%`); }
+
+  const whereClause = 'WHERE ' + where.join(' AND ');
+  const selectCols = 'id,name,phone,email,website,website_platform,city,state,industry,rating,reviews,created_at';
+  const countParams = [...params];
+  const fetchLimit = Math.min(+limit || 100, 500) + 1;
+  params.push(fetchLimit, Math.max(+offset || 0, 0));
+
+  const rows = db.prepare(`SELECT ${selectCols} FROM leads ${whereClause} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params);
+  const hasMore = rows.length >= fetchLimit;
+  if (hasMore) rows.pop();
+  const total = db.prepare(`SELECT COUNT(*) AS c FROM leads ${whereClause}`).get(...countParams).c;
+  res.json({ leads: rows, total, has_more: hasMore });
+});
+
+// Distinct industries for this license (for filter dropdown)
+app.get('/api/customer/industries', requireCustomer, (req, res) => {
+  const nodeIds = db.prepare(`SELECT id FROM nodes WHERE license_key = ?`).all(req.licenseKey).map(n => n.id);
+  if (!nodeIds.length) return res.json({ industries: [] });
+  const ph = nodeIds.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT DISTINCT industry FROM leads WHERE node_id IN (${ph}) AND industry IS NOT NULL ORDER BY industry ASC`).all(...nodeIds);
+  res.json({ industries: rows.map(r => r.industry) });
+});
+
+// Recent jobs for this license
+app.get('/api/customer/jobs', requireCustomer, (req, res) => {
+  const nodeIds = db.prepare(`SELECT id FROM nodes WHERE license_key = ?`).all(req.licenseKey).map(n => n.id);
+  if (!nodeIds.length) return res.json({ jobs: [] });
+  const ph = nodeIds.map(() => '?').join(',');
+  const limit = Math.min(+req.query.limit || 50, 200);
+  const rows = db.prepare(`SELECT id,industry,city,state,status,leads_found,created_at,finished_at FROM jobs WHERE assigned_node_id IN (${ph}) ORDER BY id DESC LIMIT ?`).all(...nodeIds, limit);
+  res.json({ jobs: rows });
+});
+
+// CSV export for this license
+app.get('/api/customer/leads/export', requireCustomer, (req, res) => {
+  const nodeIds = db.prepare(`SELECT id FROM nodes WHERE license_key = ?`).all(req.licenseKey).map(n => n.id);
+  const emptyCSV = 'name,phone,email,website,address,city,state,industry,rating,reviews\n';
+  if (!nodeIds.length) {
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="leadripper-leads.csv"');
+    return res.send(emptyCSV);
+  }
+
+  const { industry, state, city } = req.query;
+  const ph = nodeIds.map(() => '?').join(',');
+  const where = [`node_id IN (${ph})`];
+  const params = [...nodeIds];
+  if (industry) { where.push('industry = ?'); params.push(industry); }
+  if (state)    { where.push('state = ?');    params.push(state); }
+  if (city)     { where.push('city LIKE ?');  params.push(`%${city}%`); }
+
+  const whereClause = 'WHERE ' + where.join(' AND ');
+  const cols = ['name','phone','email','website','address','city','state','industry','rating','reviews','website_platform','business_hours'];
+  const rows = db.prepare(`SELECT ${cols.join(',')} FROM leads ${whereClause} ORDER BY id DESC LIMIT 100000`).all(...params);
+  const esc = v => v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
+  let csv = cols.join(',') + '\n';
+  for (const r of rows) csv += cols.map(c => esc(r[c])).join(',') + '\n';
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename="leadripper-leads-${Date.now()}.csv"`);
+  res.send(csv);
+});
+
+// Admin: assign a license key to a node (for manually linking existing nodes to customers)
+app.post('/api/admin/nodes/:id/license', requireAdmin, (req, res) => {
+  const { license_key } = req.body || {};
+  if (!license_key) return res.status(400).json({ error: 'license_key required' });
+  db.prepare('UPDATE nodes SET license_key = ? WHERE id = ?').run(license_key.trim(), +req.params.id);
   res.json({ ok: true });
 });
 
