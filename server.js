@@ -74,7 +74,9 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
   const { hostname, os, app_version, cpu_pct, ram_pct, cpu_cap, ram_cap, label,
           current_job_leads, current_job_industry, current_job_city, license_key } = req.body || {};
   const t = now();
-  const resolvedLicenseKey = (license_key && isValidLicenseKey(license_key)) ? license_key.trim() : null;
+  // Accept license key from body OR from the x-license-key header workers already send
+  const rawKey = license_key || req.headers['x-license-key'] || null;
+  const resolvedLicenseKey = (rawKey && isValidLicenseKey(rawKey)) ? rawKey.trim() : null;
 
   let node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
 
