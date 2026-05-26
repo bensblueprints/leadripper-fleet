@@ -66,6 +66,12 @@ try {
   if (!cols.includes('cities')) {
     db.exec(`ALTER TABLE jobs ADD COLUMN cities TEXT`);
   }
+  if (!cols.includes('customer_license_key')) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN customer_license_key TEXT`);
+  }
+  if (!cols.includes('callback_sent')) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN callback_sent INTEGER DEFAULT 0`);
+  }
 } catch {}
 
 // Migration: live progress fields on nodes

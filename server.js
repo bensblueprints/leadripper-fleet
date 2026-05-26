@@ -21,6 +21,8 @@ app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = '2TQmwZePcT5k-PBcpY8k4YwPEG3dtNzP';
+const FLEET_SECRET = process.env.FLEET_SECRET || 'lr-fleet-internal-2026';
+const LEADRIPPER_URL = process.env.LEADRIPPER_URL || 'https://leadripper.com';
 
 function now() { return Math.floor(Date.now() / 1000); }
 
@@ -35,8 +37,29 @@ setInterval(reloadLicenseHashes, 60000);
 
 function isValidLicenseKey(key) {
   if (!key || typeof key !== 'string') return false;
+  if (key.startsWith('lrf_')) return false; // fleet tokens validated separately
   const hash = crypto.createHash('sha256').update(key.trim()).digest('hex');
   return licenseHashes.has(hash);
+}
+
+// ---- fleet token validation (for leadripper.com account-linked workers) ----
+const fleetTokenCache = new Map(); // token -> { userId, email, cachedAt }
+const FLEET_TOKEN_TTL = 5 * 60 * 1000;
+
+async function validateFleetToken(token) {
+  if (!token || !token.startsWith('lrf_')) return null;
+  const cached = fleetTokenCache.get(token);
+  if (cached && Date.now() - cached.cachedAt < FLEET_TOKEN_TTL) return cached;
+  try {
+    const res = await fetch(`${LEADRIPPER_URL}/api/fleet-validate?token=${encodeURIComponent(token)}`, {
+      headers: { 'x-fleet-secret': FLEET_SECRET }
+    });
+    const data = await res.json();
+    if (!data.valid) { fleetTokenCache.delete(token); return null; }
+    const entry = { userId: data.userId, email: data.email, plan: data.plan, cachedAt: Date.now() };
+    fleetTokenCache.set(token, entry);
+    return entry;
+  } catch { return null; }
 }
 
 const US_STATES = new Set(['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY','DC']);
@@ -59,9 +82,17 @@ function requireWorker(req, res, next) {
 }
 
 // ---- customer (license holder) auth middleware ----
-function requireCustomer(req, res, next) {
+// Accepts both traditional license keys (hash-validated) and fleet tokens (lrf_xxx, validated via callback)
+async function requireCustomer(req, res, next) {
   const key = req.headers['x-license-key'] || req.query.license_key;
   if (!key) return res.status(401).json({ error: 'missing license key' });
+  if (key.startsWith('lrf_')) {
+    const tokenData = await validateFleetToken(key);
+    if (!tokenData) return res.status(401).json({ error: 'invalid fleet token' });
+    req.licenseKey = key.trim();
+    req.fleetUserId = tokenData.userId;
+    return next();
+  }
   if (!isValidLicenseKey(key)) return res.status(401).json({ error: 'invalid license key' });
   req.licenseKey = key.trim();
   next();
@@ -75,8 +106,11 @@ app.post('/api/fleet/heartbeat', requireWorker, (req, res) => {
           current_job_leads, current_job_industry, current_job_city, license_key } = req.body || {};
   const t = now();
   // Accept license key from body OR from the x-license-key header workers already send
+  // Fleet tokens (lrf_) are accepted as-is; traditional keys are hash-validated
   const rawKey = license_key || req.headers['x-license-key'] || null;
-  const resolvedLicenseKey = (rawKey && isValidLicenseKey(rawKey)) ? rawKey.trim() : null;
+  const resolvedLicenseKey = rawKey ? (
+    rawKey.startsWith('lrf_') ? rawKey.trim() : (isValidLicenseKey(rawKey) ? rawKey.trim() : null)
+  ) : null;
 
   let node = db.prepare('SELECT * FROM nodes WHERE machine_id = ?').get(req.machineId);
 
@@ -155,9 +189,11 @@ app.post('/api/fleet/pull-job', requireWorker, (req, res) => {
   const claimTxn = db.transaction(() => {
     const j = db.prepare(`
       SELECT * FROM jobs
-      WHERE status = 'queued' AND (target_node_id IS NULL OR target_node_id = ?)
+      WHERE status = 'queued'
+        AND (target_node_id IS NULL OR target_node_id = ?)
+        AND (customer_license_key IS NULL OR customer_license_key = ?)
       ORDER BY priority DESC, id ASC LIMIT 1
-    `).get(node.id);
+    `).get(node.id, node.license_key || '');
     if (!j) return null;
     const t = now();
     db.prepare(`
@@ -401,6 +437,21 @@ app.post('/api/fleet/job-result', requireWorker, (req, res) => {
       ctxn();
     } catch (e) {
       console.error(`[country-db] ${country} insert failed:`, e.message);
+    }
+  }
+
+  // Push leads back to leadripper.com for jobs created by account-linked users
+  if (job.customer_license_key && job.customer_license_key.startsWith('lrf_') && !job.callback_sent) {
+    const leadsToSend = db.prepare(
+      `SELECT name, phone, email, website, address, city, state, industry, rating, reviews FROM leads WHERE job_id = ?`
+    ).all(job.id);
+    if (leadsToSend.length > 0) {
+      db.prepare(`UPDATE jobs SET callback_sent = 1 WHERE id = ?`).run(job.id);
+      fetch(`${LEADRIPPER_URL}/api/fleet-leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-fleet-secret': FLEET_SECRET },
+        body: JSON.stringify({ fleet_token: job.customer_license_key, leads: leadsToSend })
+      }).catch(e => console.error('[fleet-leads callback]', e.message));
     }
   }
 
@@ -2128,6 +2179,33 @@ app.get('/api/customer/leads/export', requireCustomer, (req, res) => {
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="leadripper-leads-${Date.now()}.csv"`);
   res.send(csv);
+});
+
+// Customer: create a scrape job routed to their connected workers
+app.post('/api/customer/create-job', requireCustomer, async (req, res) => {
+  const { industry, cities = [], max_results = 50 } = req.body || {};
+  if (!industry) return res.status(400).json({ error: 'industry required' });
+  if (!cities.length) return res.status(400).json({ error: 'cities required' });
+
+  // Find user's connected nodes
+  const userNodes = db.prepare(
+    `SELECT id, status FROM nodes WHERE license_key = ? AND last_seen > ?`
+  ).all(req.licenseKey, now() - 300); // online in last 5 min
+
+  if (!userNodes.length) {
+    return res.status(400).json({ error: 'no_workers', message: 'No active fleet workers connected. Install and log in to the fleet worker app.' });
+  }
+
+  const clamp = Math.min(Math.max(+max_results || 50, 10), 500);
+  const citiesJson = JSON.stringify(cities);
+  const firstCity = cities[0] || '';
+
+  const result = db.prepare(`
+    INSERT INTO jobs (industry, city, cities, status, priority, max_results, customer_license_key)
+    VALUES (?, ?, ?, 'queued', 1, ?, ?)
+  `).run(industry, firstCity, citiesJson, clamp, req.licenseKey);
+
+  res.json({ ok: true, job_id: result.lastInsertRowid, cities: cities.length, industry, max_results: clamp });
 });
 
 // Admin: assign a license key to a node (for manually linking existing nodes to customers)
